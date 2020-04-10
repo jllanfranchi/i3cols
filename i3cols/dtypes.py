@@ -15,8 +15,6 @@ __all__ = [
     "I3DIRECTION_T",
     "I3OMGEO_T",
     "I3DOMCALIBRATION_T",
-    "DOMINFO_T",
-    "EVT_DOM_INFO_T",
     "PULSE_T",
     "PHOTON_T",
     "HITS_SUMMARY_T",
@@ -245,35 +243,6 @@ I3DOMSTATUS_T = np.dtype(
         ("status_fadc", np.int8),  # icecube.dataclasses.OnOff
         ("trig_mode", np.int8),  # icecube.dataclasses.TrigMode
         ("tx_mode", np.int8),  # icecube.dataclasses.LCMode
-    ]
-)
-
-
-DOMINFO_T = np.dtype(
-    [
-        ("sd_idx", np.uint32),
-        ("operational", np.bool),
-        ("x", np.float32),
-        ("y", np.float32),
-        ("z", np.float32),
-        ("quantum_efficiency", np.float32),
-        ("noise_rate_per_ns", np.float32),
-    ]
-)
-
-
-EVT_DOM_INFO_T = np.dtype(
-    [
-        ("sd_idx", np.uint32),
-        ("x", np.float32),
-        ("y", np.float32),
-        ("z", np.float32),
-        ("quantum_efficiency", np.float32),
-        ("noise_rate_per_ns", np.float32),
-        ("table_idx", np.uint32),
-        ("hits_start_idx", np.uint32),
-        ("hits_stop_idx", np.uint32),
-        ("total_observed_charge", np.float32),
     ]
 )
 
