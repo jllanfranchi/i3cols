@@ -298,6 +298,13 @@ def extract(path, **kwargs):
 
     if isfile(path):
         converter = ConvertI3ToNumpy()
+        kwargs.pop("gcd", None)
+        kwargs.pop("keep_tempfiles_on_fail", None)
+        kwargs.pop("tempdir", None)
+        kwargs.pop("mmap", None)
+        kwargs.pop("overwrite", None)
+        kwargs.pop("procs", None)
+
         converter.extract_file(path=path, **kwargs)
         return
 
