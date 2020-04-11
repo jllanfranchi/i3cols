@@ -348,6 +348,29 @@ def calc_normed_weights(path, outdtype=None, outdir=None, overwrite=False):
     return normed_weight
 
 
+def get_nuflavint(path, outdtype=None, outdir=None, overwrite=False):
+    """
+    """
+    outkey = "nuflavint"
+    outdir = check_outdir_and_keys(outdir=outdir, outkeys=[outkey], overwrite=overwrite)
+
+    arrays, scalar_ci = load(path, keys=["I3MCTree", "I3MCWeightDict"], mmap=True)
+    num_files = len(scalar_ci["subrun"])
+    weight = arrays["I3MCWeightDict"]["data"]["weight"]
+
+    if outdtype is None:
+        outdtype = np.dtype(
+            [("pdg_encoding", np.int32), ("interaction_type", np.uint8)]
+        )
+
+    normed_weight = (weight / num_files).astype(outdtype)
+
+    if outdir is not None:
+        save_item(path=outdir, key=outkey, data=normed_weight, overwrite=overwrite)
+
+    return normed_weight
+
+
 def coszen_key_from_zen_key_path(key_path):
     """Create a reasonable key name for a "cosine(zenith)" field that is
     derived from a "zenith" field at key path `key_path`
@@ -452,7 +475,7 @@ def compute_coszen(
 
 @numba.njit(fastmath=True, cache=True, error_model="numpy")
 def get_most_energetic_primary(flat_particles, class_abs_pdg_codes):
-    """Get most energetic primary particle, regardless of PDG code"""
+    """Get most energetic primary particle, filtered by specific PDG codes"""
     most_energetic_primary = np.empty(shape=1, dtype=dt.I3PARTICLE_T)[0]
     most_energetic_primary["energy"] = -np.inf
 

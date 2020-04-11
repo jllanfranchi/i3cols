@@ -39,7 +39,7 @@ __all__ = [
     "set_explicit_dtype",
     "dict2struct",
     "maptype2np",
-    "extract",
+    "extract_files_individually",
     "extract_season",
     "extract_run",
     "combine_runs",
@@ -49,15 +49,15 @@ __all__ = [
 ]
 
 from collections import OrderedDict
-
 try:
     from collections.abc import Sequence
 except ImportError:
     from collections import Sequence
+from copy import deepcopy
 from glob import glob
 from multiprocessing import Pool, cpu_count
 from numbers import Integral, Number
-from os import listdir
+from os import listdir, walk
 from os.path import basename, isdir, isfile, join
 import re
 from shutil import rmtree
@@ -68,8 +68,8 @@ import time
 import numpy as np
 from six import string_types
 
-from i3cols.cols import construct_arrays, find_array_paths, index_and_concatenate_arrays
-import i3cols.dtypes as dt
+from i3cols import cols
+from i3cols import dtypes as dt
 from i3cols.utils import expand, mkdir, nsort_key_func
 
 try:
@@ -81,6 +81,13 @@ try:
 except ImportError:
     OSCNEXTKEYS = []
 
+# TODO: communicate a "quit NOW!" message to worker threads
+# TODO: make `extract_run` use `extract_files_individually` then simply re-name
+#   the category index
+
+
+I3_DATA_RUN_RE = re.compile(r"Run(?P<run>[0-9]+)", flags=re.IGNORECASE)
+"""Matches MC "run" dirs, e.g. '140000' & data run dirs, e.g. 'Run00125177'"""
 
 RUN_DIR_RE = re.compile(r"(?P<pfx>Run)?(?P<run>[0-9]+)", flags=re.IGNORECASE)
 """Matches MC "run" dirs, e.g. '140000' & data run dirs, e.g. 'Run00125177'"""
@@ -90,6 +97,10 @@ IC_SEASON_DIR_RE = re.compile(
     flags=re.IGNORECASE,
 )
 """Matches data season dirs, e.g. 'IC86.11' or 'IC86.2011'"""
+
+I3_FNAME_RE = re.compile(
+    r"(?P<basename>.*)\.i3(?P<compr_exts>(\..*)*)", flags=re.IGNORECASE
+)
 
 OSCNEXT_I3_FNAME_RE = re.compile(
     r"""
@@ -129,6 +140,77 @@ MYKEYS = [
     "L6_oscNext_bool",
 ]
 DFLT_KEYS = sorted(set(OSCNEXTKEYS + MYKEYS))
+
+
+def get_i3_data_fname_info(path):
+    """Extract information about an IceCube data file from its filename, as
+    much as that is possible (and as much as the information varies across
+    convetions used with the collaboration).
+
+    Attempt to retrieve the following information:
+
+        * detector: (i.e., IC79 or IC86)
+        * season: (e.g., 11, 12, 2011, 2012, ...)
+        * level (processing level): (e.g. "2" for level 2)
+        * levelver (processing level version): (e.g., oscNext v01.04 is "01.04")
+        * pass: (e.g., "2" or "2a")
+        * part: (only seen in old files...?)
+        * run: (number prefixed by word "run"; seen in data but might be in MC)
+        * subrun: (number prfixed by word "subrun")
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    info : OrderedDict
+        Only keys present are those for which information was found.
+
+    """
+    path = basename(expand(path))
+
+    info = OrderedDict()
+
+    match = I3_FNAME_RE.match(path)
+    if match:
+        groupdict = match.groupdict()
+        info.update(groupdict)
+
+    match = re.match(
+        "(?P<detector>IC(?:79|86))([^0-9](?P<season>[0-9]+))", path, re.IGNORECASE
+    )
+    if match:
+        info.update(match.groupdict)
+
+    match = re.match(
+        "level(?P<level>[0-9]+)(.?v(?P<levelver>[0-9.]+))?", path, re.IGNORECASE
+    )
+    if match:
+        groupdict = match.groupdict()
+        info.update(groupdict)
+
+    match = re.match("pass([0-9][a-z]?)", path, re.IGNORECASE)
+    if match:
+        info["pass"] = match.groups()[0]
+
+    match = re.match("([0-9]+)", path, re.IGNORECASE)
+    if match:
+        info["run"] = match.groups()[0]
+
+    match = re.match("part([0-9]+)", path, re.IGNORECASE)
+    if match:
+        info["part"] = match.groups()[0]
+
+    match = re.match("subrun(?P<subrun>[0-9]+(_[0-9]+)?)", path, re.IGNORECASE)
+    if match:
+        info.update(match.groupdict())
+
+    for key, val in list(info.items()):
+        if not val:
+            info.pop(key)
+
+    return info
 
 
 def set_explicit_dtype(x):
@@ -292,45 +374,299 @@ def maptype2np(mapping, dtype, to_numpy=True):
     return out_vals, dtype
 
 
-def extract(path, **kwargs):
-    """Dispatch proper extraction function based on `path`"""
-    path = expand(path)
+def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
+    """Given a data file's name, attempt to extract which run it came from, and
+    find the GCD for that run in `gcd_dir`.
 
-    if isfile(path):
-        converter = ConvertI3ToNumpy()
-        kwargs.pop("gcd", None)
-        kwargs.pop("keep_tempfiles_on_fail", None)
-        kwargs.pop("tempdir", None)
-        kwargs.pop("mmap", None)
-        kwargs.pop("overwrite", None)
-        kwargs.pop("procs", None)
+    Parameters
+    ----------
+    datafilename
+    gcd_dir
+    recurse : bool
 
-        converter.extract_file(path=path, **kwargs)
-        return
+    Returns
+    -------
+    gcd_file_path
 
-    assert isdir(path), path
+    Raises
+    ------
+    ValueError
+        If a GCD file cannot be found
 
-    match = IC_SEASON_DIR_RE.match(basename(path))
+    """
+    gcd_dir = expand(gcd_dir)
+    assert isdir(gcd_dir)
+
+    match = I3_DATA_RUN_RE.match(basename(datafilename))
     if match:
-        print(
-            "Will extract IceCube season dir {}; filename metadata={}".format(
-                path, match.groupdict()
-            )
+        run = match.groupdict()["run"].lstrip("0")
+        run_gcd_re = re.compile(
+            r"run0*{}.*gcd.*\.i3.*".format(run), flags=re.IGNORECASE
         )
-        extract_season(path=path, **kwargs)
-        return
+        for dirpath, dirs, files in walk(gcd_dir, followlinks=True):
+            if recurse:
+                dirs.sort(key=nsort_key_func)
+            else:
+                del dirs[:]
+            files.sort(key=nsort_key_func)
+            for filename in files:
+                if run_gcd_re.match(filename):
+                    return join(dirpath, filename)
 
-    match = RUN_DIR_RE.match(basename(path))
-    if match:
-        print(
-            "Will extract data or MC run dir {}; metadata={}".format(
-                path, match.groupdict()
-            )
+    raise IOError(
+        'Could not find GCD in dir "{}" for data run file "{}"'.format(
+            gcd_dir, datafilename
         )
-        extract_run(path=path, **kwargs)
-        return
+    )
 
-    raise ValueError('Do not know what to do with path "{}"'.format(path))
+
+def extract_files_individually(
+    paths,
+    outdir,
+    index_and_concatenate,
+    gcd=None,
+    sub_event_stream=None,
+    keys=None,
+    overwrite=True,
+    compress=False,
+    tempdir=None,
+    keep_tempfiles_on_fail=False,
+    procs=cpu_count(),
+):
+    """Exctract i3 files "individually" (if specified, an appropriate GCD file
+    will also be read before a given i3 data file -- e.g., if pulses are to be
+    extracted) into i3cols (directories + numpy) format in `outdir`.
+
+    Parameters
+    ----------
+    paths : str or iterable thereof
+    outdir : str
+    index_and_concatenate : bool
+    gcd : str, iterable thereof, or None; optional
+    sub_event_stream : str, iterable thereof, or None; optional
+    keys : str, iterable thereof, or None; optional
+    overwrite : bool, optional
+    compress : bool, optional
+    tempdir : str, optional
+    keep_tempfiles_on_fail : bool, optional
+    procs : int >= 1, optional
+
+    Notes
+    -----
+    It is recommended to use this function if either of the following is true:
+
+        * It is necessary to know from which file extracted events came after
+            being extracted (e.g., normalizing Monte Carlo requires knowing the
+            number of source files)
+
+        * The i3 files are "small": I.e., the time to extract a single i3 file
+            is significantly larger than the time to execute the
+            `run_icetray_converter` function (this instantiates
+            ConvertI3ToNumpy and creates an icetray to process the (gcd+) i3
+            data file
+
+    If neither of the above hold (e.g., for all subruns within a single data
+    run), it is recommended to simply call `run_icetray_converter` directly, or
+    use the higher-level `extract_season` function which already does for each
+    run wihile also attempting to extract all runs in parallel.
+
+    The output column array directories are either:
+
+        1. Written directly within `outdir`; a
+            "sourcefile__category_index.npy" array is created in `outdir` to
+            index into the concatenated array. This category index can be
+            re-formulated later with more intelligent labeling specific to the
+            filenames (e.g., if each file represents a subrun, the subrun
+            number can be used instead of the full file name)
+
+        2. Written to subdirectories within `outdir` named after the source
+            file's basename (with ".i3*" extension(s) removed)
+
+    See also
+    --------
+    run_icetray_converter
+    extract_season
+    extract_run
+
+    """
+    if not overwrite:
+        raise NotImplementedError("For now, you MUST set `overwrite` to True")
+
+    if isinstance(paths, string_types):
+        paths = [paths]
+    paths = [expand(p) for p in sorted(paths, key=nsort_key_func)]
+
+    gcd_is_dir = False
+    if gcd is not None:
+        gcd = expand(gcd)
+        gcd_is_dir = isdir(gcd)
+        if not gcd_is_dir:
+            assert isfile(gcd)
+
+    if isinstance(sub_event_stream, string_types):
+        sub_event_stream = [sub_event_stream]
+
+    if isinstance(keys, string_types):
+        keys = [keys]
+
+    if tempdir is not None:
+        if not index_and_concatenate:
+            print("`tempdir` is not used if `index_and_concatenate` is False")
+        else:
+            tempdir = expand(tempdir)
+
+    if keys is None:
+        print("Extracting all keys in all files")
+    else:
+        if not overwrite:
+            existing_arrays, _ = cols.find_array_paths(outdir, keys=keys)
+            existing_keys = set(existing_arrays.keys())
+            redundant_keys = existing_keys.intersection(keys)
+            if redundant_keys:
+                print("will not extract existing keys:", sorted(redundant_keys))
+                keys = [k for k in keys if k not in redundant_keys]
+
+        if len(keys) == 0:
+            print("No keys to extract!")
+            return
+
+        print("Keys remaining to extract:", keys)
+
+    full_tempdir = None
+    paths_to_compress = []
+    sourcefile_array_map = OrderedDict()
+    pool = None
+    if procs > 1:
+        pool = Pool(procs)
+    try:
+        if index_and_concatenate:
+            if tempdir is not None:
+                mkdir(tempdir)
+            full_tempdir = mkdtemp(dir=tempdir)
+
+        for path in paths:
+            orig_path = deepcopy(path)
+            match = I3_FNAME_RE.match(basename(path))
+            if match:
+                path = match.groupdict()["basename"]
+
+            if index_and_concatenate:
+                thisfile_outdir = join(full_tempdir, path)
+                sourcefile_array_map[path] = thisfile_outdir
+            else:
+                thisfile_outdir = join(outdir, path)
+                if compress:
+                    paths_to_compress.append(thisfile_outdir)
+
+            if gcd is None:
+                extract_paths = [orig_path]
+            else:
+                gcd_file = deepcopy(gcd)
+                if gcd_is_dir:
+                    gcd_file = find_gcd_for_data_file(datafilename=path, gcd_dir=gcd)
+                extract_paths = [gcd_file, orig_path]
+
+            kwargs = dict(
+                paths=extract_paths,
+                outdir=thisfile_outdir,
+                sub_event_stream=sub_event_stream,
+                keys=keys,
+            )
+
+            if procs == 1:
+                run_icetray_converter(**kwargs)
+            else:
+                pool.apply_async(run_icetray_converter, tuple(), kwargs)
+
+        if pool is not None:
+            pool.close()
+            pool.join()
+
+        if index_and_concatenate:
+            for path, thisfile_outdir in list(sourcefile_array_map.items()):
+                sourcefile_array_map[path], _ = cols.find_array_paths(thisfile_outdir)
+            cols.index_and_concatenate_arrays(
+                category_array_map=sourcefile_array_map,
+                category_name="sourcefile",
+                outdir=outdir,
+            )
+            if compress:
+                paths_to_compress = outdir
+
+    except:
+        if full_tempdir is not None:
+            if keep_tempfiles_on_fail:
+                print(
+                    'Temp dir/files will NOT be removed; see "{}" to inspect'
+                    ' and manually remove'.format(full_tempdir)
+                )
+            else:
+                try:
+                    rmtree(full_tempdir)
+                except Exception as err:
+                    print(err)
+        raise
+
+    else:
+        if full_tempdir is not None:
+            try:
+                rmtree(full_tempdir)
+            except Exception as err:
+                print(err)
+
+    finally:
+        if pool is not None:
+            try:
+                pool.close()
+                pool.join()
+            except Exception as err:
+                print(err)
+
+    if compress:
+        # TODO: keys weren't created by this function are also compressed by
+        # using `recurse`, but we don't know what kesy were generated except in
+        # particular cases. Do we care that this could compress files it didn't
+        # create?
+        cols.compress(paths=paths_to_compress, recurse=True, keep=False, procs=procs)
+
+
+# def extract(path, **kwargs):
+#     """Dispatch proper extraction function based on `path`"""
+#     path = expand(path)
+#
+#     if isinstance(path, Sequence) and not isinstance(path, string_types):
+#         return extract_run(path=path, **kwargs)
+#
+#     if isfile(path):
+#         for excess_kw in [
+#             "gcd", "keep_tempfiles_on_fail", "tempdir", "mmap", "overwrite", "procs"
+#         ]:
+#             kwargs.pop(excess_kw, None)
+#
+#         converter = ConvertI3ToNumpy()
+#         return converter.extract_file(path=path, **kwargs)
+#
+#     assert isdir(path), path
+#
+#     match = IC_SEASON_DIR_RE.match(basename(path))
+#     if match:
+#         print(
+#             "Will extract IceCube season dir {}; filename metadata={}".format(
+#                 path, match.groupdict()
+#             )
+#         )
+#         return extract_season(path=path, **kwargs)
+#
+#     match = RUN_DIR_RE.match(basename(path))
+#     if match:
+#         print(
+#             "Will extract data or MC run dir {}; metadata={}".format(
+#                 path, match.groupdict()
+#             )
+#         )
+#         return extract_run(path=path, **kwargs)
+#
+#     raise ValueError('Do not know what to do with path "{}"'.format(path))
 
 
 def extract_season(
@@ -369,13 +705,10 @@ def extract_season(
         tempdir = expand(tempdir)
 
     pool = None
-    parent_tempdir_created = None
     try:
         if tempdir is not None:
-            parent_tempdir_created = mkdir(tempdir)
+            mkdir(tempdir)
         full_tempdir = mkdtemp(dir=tempdir)
-        if parent_tempdir_created is None:
-            parent_tempdir_created = full_tempdir
 
         if gcd is None:
             gcd = path
@@ -395,13 +728,12 @@ def extract_season(
 
         print("outdir:", outdir)
         print("full_tempdir:", full_tempdir)
-        print("parent_tempdir_created:", parent_tempdir_created)
 
         if keys is None:
             print("extracting all keys in all files")
         else:
             if not overwrite:
-                existing_arrays, _ = find_array_paths(outdir)
+                existing_arrays, _ = cols.find_array_paths(outdir)
                 existing_keys = set(existing_arrays.keys())
                 redundant_keys = existing_keys.intersection(keys)
                 if redundant_keys:
@@ -496,6 +828,7 @@ def extract_run(
     outdir=None,
     tempdir=None,
     gcd=None,
+    sub_event_stream=None,
     keys=None,
     overwrite=False,
     mmap=True,
@@ -517,6 +850,7 @@ def extract_run(
     tempdir : str or None, optional
         Intermediate arrays will be written to this directory.
     gcd : str or None, optional
+    sub_event_stream : str, sequence thereof, or None; optional
     keys : str, iterable thereof, or None; optional
     overwrite : bool, optional
     mmap : bool, optional
@@ -530,18 +864,18 @@ def extract_run(
     if tempdir is not None:
         tempdir = expand(tempdir)
 
+    if isinstance(sub_event_stream, string_types):
+        sub_event_stream = [sub_event_stream]
+
+    if isinstance(keys, string_types):
+        keys = [keys]
+
     pool = None
-    parent_tempdir_created = None
     mkdir(outdir)
     try:
         if tempdir is not None:
-            parent_tempdir_created = mkdir(tempdir)
+            mkdir(tempdir)
         full_tempdir = mkdtemp(dir=tempdir)
-        if parent_tempdir_created is None:
-            parent_tempdir_created = full_tempdir
-
-        if isinstance(keys, string_types):
-            keys = [keys]
 
         match = RUN_DIR_RE.match(basename(path))
         assert match, 'path not a run directory? "{}"'.format(basename(path))
@@ -573,7 +907,7 @@ def extract_run(
             print("extracting all keys in all files")
         else:
             if not overwrite:
-                existing_arrays, _ = find_array_paths(outdir, keys=keys)
+                existing_arrays, _ = cols.find_array_paths(outdir, keys=keys)
                 existing_keys = set(existing_arrays.keys())
                 redundant_keys = existing_keys.intersection(keys)
                 if redundant_keys:
@@ -623,7 +957,12 @@ def extract_run(
                 mkdir(subrun_tempdir)
                 subrun_tempdirs.append(subrun_tempdir)
 
-                kw = dict(paths=paths, outdir=subrun_tempdir, keys=keys)
+                kw = dict(
+                    paths=paths,
+                    sub_event_stream=sub_event_stream,
+                    keys=keys,
+                    outdir=subrun_tempdir,
+                )
                 if procs == 1:
                     arrays[subrun] = run_icetray_converter(**kw)
                 else:
@@ -634,13 +973,15 @@ def extract_run(
                 for key, result in requests.items():
                     arrays[key] = result.get()
 
-            index_and_concatenate_arrays(
+            cols.index_and_concatenate_arrays(
                 arrays, category_name="subrun", outdir=outdir, mmap=mmap,
             )
 
         else:  # is_data
             paths = [gcd] + [fpath for _, fpath in subrun_filepaths]
-            run_icetray_converter(paths=paths, outdir=outdir, keys=keys)
+            run_icetray_converter(
+                paths=paths, sub_event_stream=sub_event_stream, keys=keys, outdir=outdir
+            )
 
     except Exception:
         if not keep_tempfiles_on_fail:
@@ -714,12 +1055,12 @@ def combine_runs(path, outdir, keys=None, mmap=True):
     existing_category_indexes = OrderedDict()
 
     for run_int, run_dir in run_dirs:
-        array_map[run_int], csi = find_array_paths(run_dir, keys=keys)
+        array_map[run_int], csi = cols.find_array_paths(run_dir, keys=keys)
         if csi:
             existing_category_indexes[run_int] = csi
 
     mkdir(outdir)
-    index_and_concatenate_arrays(
+    cols.index_and_concatenate_arrays(
         category_array_map=array_map,
         existing_category_indexes=existing_category_indexes,
         category_name="run",
@@ -729,7 +1070,7 @@ def combine_runs(path, outdir, keys=None, mmap=True):
     )
 
 
-def run_icetray_converter(paths, outdir, keys):
+def run_icetray_converter(paths, outdir, sub_event_stream, keys):
     """Simple function callable, e.g., by subprocesses (i.e., to run in
     parallel)
 
@@ -737,6 +1078,7 @@ def run_icetray_converter(paths, outdir, keys):
     ----------
     paths
     outdir
+    sub_event_stream
     keys
 
     Returns
@@ -750,7 +1092,12 @@ def run_icetray_converter(paths, outdir, keys):
 
     tray = I3Tray()
     tray.AddModule(_type="I3Reader", _name="reader", FilenameList=paths)
-    tray.Add(_type=converter, _name="ConvertI3ToNumpy", keys=keys)
+    tray.Add(
+        _type=converter,
+        _name="ConvertI3ToNumpy",
+        sub_event_stream=sub_event_stream,
+        keys=keys,
+    )
     tray.Execute()
     tray.Finish()
 
@@ -915,7 +1262,7 @@ class ConvertI3ToNumpy(object):
         self.failed_keys = set()
         self.frame_data = []
 
-    def __call__(self, frame, keys=None):
+    def __call__(self, frame, sub_event_stream=None, keys=None):
         """Allows calling the instantiated class directly, which is the
         mechanism IceTray uses (including requiring `frame` as the first
         argument)
@@ -934,6 +1281,18 @@ class ConvertI3ToNumpy(object):
             value, so modify if this is an issue or there is a better way.
 
         """
+        if frame.Stop != self.icetray.I3Frame.Physics:
+            return False
+
+        if isinstance(sub_event_stream, string_types):
+            sub_event_stream = [sub_event_stream]
+
+        if (
+            sub_event_stream is not None
+            and frame["I3EventHeader"].sub_event_stream not in sub_event_stream
+        ):
+            return False
+
         frame_data = self.extract_frame(frame, keys=keys)
         self.frame_data.append(frame_data)
         return False
@@ -956,78 +1315,110 @@ class ConvertI3ToNumpy(object):
             See `construct_arrays` for format of `arrays`
 
         """
-        arrays = construct_arrays(self.frame_data, outdir=outdir)
+        arrays = cols.construct_arrays(self.frame_data, outdir=outdir)
         del self.frame_data[:]
         return arrays
 
-    def extract_files(self, paths, keys=None):
-        """Extract info from one or more i3 file(s)
+    # def extract_files(self, paths, keys=None):
+    #     """Extract info from one or more i3 file(s)
 
-        Parameters
-        ----------
-        paths : str or iterable thereof
-        keys : str, iterable thereof, or None; optional
+    #     Parameters
+    #     ----------
+    #     paths : str or iterable thereof
+    #     keys : str, iterable thereof, or None; optional
 
-        Returns
-        -------
-        arrays : OrderedDict
+    #     Returns
+    #     -------
+    #     arrays : OrderedDict
 
-        """
-        raise NotImplementedError(
-            """I3FrameSequence doesn't allow reading multiple files reliably
-            while preserving GCD information for current frame. Until bug is
-            fixed, this is disabled as unreliable, and use as icetray module
-            instead."""
-        )
-        if isinstance(paths, str):
-            paths = [paths]
-        paths = [expand(path) for path in paths]
-        i3file_iterator = self.dataio.I3FrameSequence()
-        try:
-            extracted_data = []
-            for path in paths:
-                i3file_iterator.add_file(path)
-                while i3file_iterator.more():
-                    frame = i3file_iterator.pop_frame()
-                    if frame.Stop != self.icetray.I3Frame.Physics:
-                        continue
-                    data = self.extract_frame(frame=frame, keys=keys)
-                    extracted_data.append(data)
-                i3file_iterator.close_last_file()
-        finally:
-            i3file_iterator.close()
+    #     """
+    #     raise NotImplementedError(
+    #         """I3FrameSequence doesn't allow reading multiple files reliably
+    #         while preserving GCD information for current frame. Until bug is
+    #         fixed, this is disabled as unreliable, and use as icetray module
+    #         instead."""
+    #     )
+    #     if isinstance(paths, str):
+    #         paths = [paths]
+    #     paths = [expand(path) for path in paths]
+    #     i3file_iterator = self.dataio.I3FrameSequence()
+    #     try:
+    #         extracted_data = []
+    #         for path in paths:
+    #             i3file_iterator.add_file(path)
+    #             while i3file_iterator.more():
+    #                 frame = i3file_iterator.pop_frame()
+    #                 if frame.Stop != self.icetray.I3Frame.Physics:
+    #                     continue
+    #                 data = self.extract_frame(frame=frame, keys=keys)
+    #                 extracted_data.append(data)
+    #             i3file_iterator.close_last_file()
+    #     finally:
+    #         i3file_iterator.close()
 
-        return construct_arrays(extracted_data)
+    #     return construct_arrays(extracted_data)
 
-    def extract_file(self, path, outdir=None, keys=None):
-        """Extract info from one or more i3 file(s)
+    def extract_file(
+        self, path, sub_event_stream=None, keys=None, construct_arrays=True, outdir=None
+    ):
+        if outdir is not None and not construct_arrays:
+            raise ValueError(
+                "`outdir` is specified, but without"
+                " `construct_arrays=True`, nothing will be saved to disk"
+            )
 
-        Parameters
-        ----------
-        path : str
-        keys : str, iterable thereof, or None; optional
-
-        Returns
-        -------
-        arrays : OrderedDict
-
-        """
-        path = expand(path)
-
+        print('extracting "{}"'.format(path))
         extracted_data = []
-
         i3file = self.dataio.I3File(path)
         try:
             while i3file.more():
                 frame = i3file.pop_frame()
                 if frame.Stop != self.icetray.I3Frame.Physics:
                     continue
+                if (
+                    sub_event_stream
+                    and frame["I3EventHeader"].sub_event_stream not in sub_event_stream
+                ):
+                    continue
                 data = self.extract_frame(frame=frame, keys=keys)
                 extracted_data.append(data)
         finally:
             i3file.close()
 
-        return construct_arrays(extracted_data, outdir=outdir)
+        if construct_arrays:
+            return cols.construct_arrays(extracted_data, outdir=outdir)
+
+        return extracted_data
+
+    def extract_files(self, path, outdir, sub_event_stream=None, keys=None):
+        """Extract info from one or more i3 files
+
+        Parameters
+        ----------
+        path : str or iterable thereof
+        sub_event_stream : str or None, optional
+        outdir : str or None, optional
+        keys : str, iterable thereof, or None; optional
+
+        """
+        if isinstance(path, string_types):
+            path = [path]
+        paths = [expand(p) for p in sorted(path, key=nsort_key_func)]
+
+        for path_ in paths:
+            if outdir is not None:
+                fbase = basename(path_)
+                match = I3_FNAME_RE.match(fbase)
+                if match:
+                    fbase = match.groupdict()["basename"]
+                full_outdir = join(outdir, fbase)
+
+            self.extract_file(
+                path=path_,
+                sub_event_stream=sub_event_stream,
+                keys=keys,
+                outdir=full_outdir,
+            )
 
     def extract_frame(self, frame, keys=None):
         """Extract icetray frame objects to numpy typed objects
@@ -1537,7 +1928,233 @@ class ConvertI3ToNumpy(object):
         return vals, dt.I3DOMCALIBRATION_T
 
 
+def test_IC_DATA_RUN_RE():
+    """Unit tests for OSCNEXT_I3_FNAME_RE."""
+    # pylint: disable=line-too-long
+    test_cases = [
+        (
+            "/tmp/i3/data/level7_v01.04/IC86.11/Run00118552/oscNext_data_IC86.11_level7_v01.04_pass2_Run00118552_Subrun00000009.i3.zst",
+            {
+                "basename": "",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "7",
+                "pass": "2",
+                "levelver": "01.04",
+                "run": "",
+                "part": "",
+                "season": "2011",
+                "subrun": "00000009",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2009/filtered/level1/0510/Level1_Run00113675_Part00000000.i3.gz",
+            {
+                "basename": "Level1_Run00113675_Part00000000",
+                "compr_exts": ".gz",
+                "detector": "",
+                "level": "1",
+                "pass": "",
+                "levelver": "",
+                "run": "00113675",
+                "part": "00000000",
+                "season": "",
+                "subrun": "",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2011/filtered/level2pass2/0703/Run00118401_1/Level2pass2_IC86.2011_data_Run00118401_Subrun00000000_00000184.i3.zst",
+            {
+                "basename": "Level2pass2_IC86.2011_data_Run00118401_Subrun00000000_00000184",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "2",
+                "levelver": "",
+                "run": "00118401",
+                "part": "",
+                "season": "2011",
+                "subrun": "00000000_00000184",  # TODO: ???
+            },
+        ),
+        (
+            "/data/exp/IceCube/2012/filtered/level2/0101/Level2_IC86.2011_data_Run00119221_Part00000001_SLOP.i3.bz2",
+            {
+                "basename": "Level2_IC86.2011_data_Run00119221_Part00000001_SLOP",
+                "compr_exts": ".bz2",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00119221",
+                "part": "00000001",
+                "season": "2011",
+                "subrun": "",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2013/filtered/level2pass2a/0417/Run00122201/Level2pass2_IC86.2012_data_Run00122201_Subrun00000000_00000138.i3.zst",
+            {
+                "basename": "Level2pass2_IC86.2012_data_Run00122201_Subrun00000000_00000138",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "2",
+                "levelver": "",
+                "run": "00122201",
+                "part": "",
+                "season": "2012",
+                "subrun": "00000000_00000138",  # ???
+            },
+        ),
+        (
+            "/data/exp/IceCube/2014/filtered/PFFilt/0316/PFFilt_PhysicsFiltering_Run00124369_Subrun00000000_00000134.tar.bz2",
+            {
+                "basename": "PFFilt_PhysicsFiltering_Run00124369_Subrun00000000_00000134",
+                "compr_exts": ".bz2",
+                "detector": "",
+                "level": "",
+                "pass": "",
+                "levelver": "",
+                "run": "00124369",
+                "part": "",
+                "season": "",
+                "subrun": "00000000_00000134",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2015/filtered/level2pass2/0903/Run00126809_3/Level2pass2_IC86.2015_data_Run00126809_Subrun00000000_00000114.i3.zst",
+            {
+                "basename": "Level2pass2_IC86.2015_data_Run00126809_Subrun00000000_00000114",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "2",
+                "levelver": "",
+                "run": "00126809",
+                "part": "",
+                "season": "2015",
+                "subrun": "00000000_00000114",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2016/filtered/NewWavedeform/L2/data.round3/Level2pass3/Run00127996/Level2pass3_PhysicsFiltering_Run00127996_Subrun00000000_00000139.i3.zst",
+            {
+                "basename": "Level2pass3_PhysicsFiltering_Run00127996_Subrun00000000_00000139",
+                "compr_exts": ".zst",
+                "detector": "",
+                "level": "2",
+                "pass": "3",
+                "levelver": "",
+                "run": "00127996",
+                "part": "",
+                "season": "",
+                "subrun": "00000000_00000139",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2017/filtered/level2/1231/Run00130473/Level2_IC86.2017_data_Run00130473_Subrun00000000_00000095_IT.i3.zst",
+            {
+                "basename": "Level2_IC86.2017_data_Run00130473_Subrun00000000_00000095_IT",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00130473",
+                "part": "",
+                "season": "2017",
+                "subrun": "00000000_00000095",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2018/filtered/level2/0121/Run00130574_70/Level2_IC86.2017_data_Run00130574_Subrun00000000_00000018.i3.zst",
+            {
+                "basename": "Level2_IC86.2017_data_Run00130574_Subrun00000000_00000018",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00130574",
+                "part": "",
+                "season": "2017",
+                "subrun": "00000000_00000018",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2019/filtered/level2.season2019_RHEL_6_py2-v3.1.1/0602/Run00132643/Level2_IC86.2019RHEL_6_py2-v3.1.1_data_Run00132643_Subrun00000000_00000052.i3.zst",
+            {
+                "basename": "Level2_IC86.2019RHEL_6_py2-v3.1.1_data_Run00132643_Subrun00000000_00000052",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00132643",
+                "part": "",
+                "season": "2019",
+                "subrun": "00000000_00000052",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2020/filtered/level2/0306/Run00133807_78/Level2_IC86.2019_data_Run00133807_Subrun00000000_00000029.i3.zst",
+            {
+                "basename": "Level2_IC86.2019_data_Run00133807_Subrun00000000_00000029",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00133807",
+                "part": "",
+                "season": "2019",
+                "subrun": "00000000_00000029",
+            },
+        ),
+    ]
+
+    for test_input, expected_output in test_cases:
+        try:
+            info = get_i3_data_fname_info(test_input)
+
+            expected_output = deepcopy(expected_output)
+            for k, v in list(expected_output.items()):
+                if not v:
+                    expected_output.pop(k)
+
+            ref_keys = set(expected_output.keys())
+            actual_keys = set(info.keys())
+            if actual_keys != ref_keys:
+                excess = actual_keys.difference(ref_keys)
+                missing = ref_keys.difference(actual_keys)
+                err_msg = []
+                if excess:
+                    err_msg.append("excess keys: " + str(sorted(excess)))
+                if missing:
+                    err_msg.append("missing keys: " + str(sorted(missing)))
+                if err_msg:
+                    raise ValueError("; ".join(err_msg))
+
+            err_msg = []
+            for key, ref_val in expected_output.items():
+                actual_val = info[key]
+                if actual_val != ref_val:
+                    err_msg.append(
+                        '"{key}": actual_val = "{actual_val}"'
+                        ' but ref_val = "{ref_val}"'.format(
+                            key=key, actual_val=actual_val, ref_val=ref_val
+                        )
+                    )
+            if err_msg:
+                raise ValueError("; ".join(err_msg))
+        except Exception:
+            sys.stderr.write('Failure on test input = "{}"\n'.format(test_input))
+            raise
+
+
 def test_OSCNEXT_I3_FNAME_RE():
+
     """Unit tests for OSCNEXT_I3_FNAME_RE."""
     # pylint: disable=line-too-long
     test_cases = [

@@ -161,6 +161,32 @@ def get_widest_float_dtype(dtypes):
     return np.float64
 
 
+def fuse_arrays(arrays):
+    """Horizontal join of arrays: Combine into one structured array whose
+    fields are taken from each component array.
+
+    Code from user Sven Marnach, https://stackoverflow.com/a/5355974
+
+    Parameters
+    ----------
+    arrays : iterable of numpy ndarrays with struct dtypes
+
+    Returns
+    -------
+    array : numpy ndarray with struct dtype
+
+    """
+    arrays = list(arrays)
+    sizes = np.array([a.itemsize for a in arrays])
+    offsets = np.r_[0, sizes.cumsum()]
+    n = len(arrays[0])
+    joint = np.empty((n, offsets[-1]), dtype=np.uint8)
+    for a, size, offset in zip(arrays, sizes, offsets):
+        joint[:, offset : offset + size] = a.view(np.uint8).reshape(n, size)
+    dtype = sum((a.dtype.descr for a in arrays), [])
+    return joint.ravel().view(dtype)
+
+
 # TODO
 # def create_new_columns(
 #     func, srcpath, srckeys=None, outdir=None, outkeys=None, overwrite=False, **kwargs

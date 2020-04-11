@@ -354,22 +354,32 @@ def load_contained_paths(obj, inplace=False, mmap=False):
     return obj
 
 
-def compress(path, keys=None, recurse=True, keep=False, procs=cpu_count()):
-    """Compress any key directories found within `path` (including `path`, if
-    it is a key directory) using Numpy's `savez_compressed` to produce
-    "{key}.npz" files.
+def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
+    """Compress any key directories found in any path in `paths` (including
+    path itself, if it is a key directory) using Numpy's `savez_compressed` to
+    produce "{key}.npz" files.
 
     Parameters
     ----------
-    keep : bool, optional
-        Keep the original key directory even after successfully compressing it
+    paths
 
     keys : str, iterable thereof, or None; optional
         Only look to compress key directories by these names
 
+    recurse
+
+    keep : bool, optional
+        Keep the original key directory even after successfully compressing it
+
+    procs
+
     """
-    path = expand(path)
-    assert isdir(path)
+    if isinstance(paths, string_types):
+        paths = [paths]
+    paths = [expand(p) for p in paths]
+    for path in paths:
+        assert isdir(path), path
+
     if isinstance(keys, string_types):
         keys = set([keys])
     elif keys is not None:
@@ -380,28 +390,29 @@ def compress(path, keys=None, recurse=True, keep=False, procs=cpu_count()):
         pool = Pool(procs)
 
     try:
-        for dirpath, dirs, files in walk(path):
-            if recurse:
-                dirs.sort(key=nsort_key_func)
-            else:
+        for path in paths:
+            for dirpath, dirs, files in walk(path):
+                if recurse:
+                    dirs.sort(key=nsort_key_func)
+                else:
+                    del dirs[:]
+                if (
+                    "data.npy" not in files
+                    or len(dirs) > 0  # subdirectories
+                    or len(set(files).difference(ARRAY_FNAMES.values())) > 0  # extra files
+                    or keys is not None
+                    and basename(dirpath) not in keys
+                ):
+                    continue
+
+                args = (dirpath, deepcopy(files), keep)
+                if procs == 1:
+                    _compress(*args)
+                else:
+                    pool.apply_async(_compress, args)
+
                 del dirs[:]
-            if (
-                "data.npy" not in files
-                or len(dirs) > 0  # subdirectories
-                or len(set(files).difference(ARRAY_FNAMES.values())) > 0  # extra files
-                or keys is not None
-                and basename(dirpath) not in keys
-            ):
-                continue
-
-            args = (dirpath, deepcopy(files), keep)
-            if procs == 1:
-                _compress(*args)
-            else:
-                pool.apply_async(_compress, args)
-
-            del dirs[:]
-            del files[:]
+                del files[:]
 
     finally:
         if pool is not None:
@@ -430,7 +441,7 @@ def _compress(dirpath, files, keep):
             print(err)
 
 
-def decompress(path, keys=None, recurse=True, keep=False, procs=cpu_count()):
+def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
     """Decompress any key archive files (end in .npz and contain "data" and
     possibly other arrays) found within `path` (including `path`, if it is a
     key archive).
@@ -438,6 +449,8 @@ def decompress(path, keys=None, recurse=True, keep=False, procs=cpu_count()):
 
     Parameters
     ----------
+    paths
+
     keys : str, iterable thereof, or None; optional
         Only look to decompress keys by these names (ignore others)
 
@@ -448,38 +461,55 @@ def decompress(path, keys=None, recurse=True, keep=False, procs=cpu_count()):
     keep : bool, optional
         Keep the original key directory even after successfully compressing it
 
+    procs
+
     """
-    path = expand(path)
+    if isinstance(paths, string_types):
+        paths = [paths]
+    paths = [expand(p) for p in path]
+
     if isinstance(keys, string_types):
         keys = set([keys])
     elif keys is not None:
         keys = set(keys)
 
-    if isfile(path) and path.endswith(".npz") and (keys is None or path[:-4] in keys):
-        _decompress(dirpath=dirname(path), filename=basename(path), keep=keep)
-
-    # else: is directory
-
     pool = None
     if procs > 1:
         pool = Pool(procs)
-    try:
-        for dirpath, dirnames, filenames in walk(path):
-            if recurse:
-                dirnames.sort(key=nsort_key_func)
-            else:
-                del dirnames[:]
 
-            for filename in filenames:
-                if filename.endswith(".npz"):
-                    if keys is not None:
-                        if filename[:-4] not in keys:
-                            continue
-                    args = (dirpath, filename, keep)
-                    if procs == 1:
-                        _decompress(*args)
-                    else:
-                        pool.apply_async(_decompress, args)
+    try:
+        for path in paths:
+            if (
+                isfile(path)
+                and path.endswith(".npz")
+                and (keys is None or path[:-4] in keys)
+            ):
+                kwargs = dict(dirpath=dirname(path), filename=basename(path), keep=keep)
+                if procs == 1:
+                    _decompress(**kwargs)
+                else:
+                    pool.apply_async(_decompress, tuple(), kwargs)
+                continue
+
+            # else: is directory
+
+            for dirpath, dirnames, filenames in walk(path):
+                if recurse:
+                    dirnames.sort(key=nsort_key_func)
+                else:
+                    del dirnames[:]
+
+                for filename in filenames:
+                    if filename.endswith(".npz"):
+                        if keys is not None:
+                            if filename[:-4] not in keys:
+                                continue
+                        kwargs = dict(dirpath=dirpath, filename=filename, keep=keep)
+                        if procs == 1:
+                            _decompress(**kwargs)
+                        else:
+                            pool.apply_async(_decompress, tuple(), kwargs)
+
     finally:
         if pool is not None:
             try:
@@ -500,7 +530,7 @@ def _decompress(dirpath, filename, keep):
         Path up to but not including `filename`
 
     filename : str
-        E.g., I3EventHeder.npz
+        E.g., I3EventHeader.npz
 
     keep : bool
         Keep original archive file after successfully decompressing

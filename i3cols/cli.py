@@ -34,8 +34,9 @@ __all__ = ["main"]
 
 
 from argparse import ArgumentParser
-from functools import partial
+from inspect import getargspec
 from multiprocessing import cpu_count
+import sys
 
 import numpy as np
 from six import string_types
@@ -50,20 +51,36 @@ def main(description=__doc__):
     parser = ArgumentParser(description=description)
     subparsers = parser.add_subparsers()
 
+    all_sp = []
+
+    # Extracting files individually has unique kwargs
+
+    subparser = subparsers.add_parser("extract_files_individually")
+    all_sp.append(subparser)
+    subparser.set_defaults(func=extract.extract_files_individually)
+    subparser.add_argument("--outdir", required=True)
+    subparser.add_argument("--index-and-concatenate", action="store_true")
+    subparser.add_argument("--gcd", default=None)
+    subparser.add_argument("--sub-event-stream", nargs="+", default=None)
+    subparser.add_argument("--keys", nargs="+", default=None)
+    subparser.add_argument("--overwrite", action="store_true")
+    subparser.add_argument("--compress", action="store_true")
+    subparser.add_argument("--tempdir", default=None)
+    subparser.add_argument("--keep-tempfiles-on-fail", action="store_true")
+    subparser.add_argument("--procs", type=int, default=cpu_count())
+
     # Extract season and run have similar arguments; can use generic `extract`
     # for these, too
 
-    parser_extract = subparsers.add_parser("extract")
-    parser_extract.set_defaults(func=extract.extract)
-
     parser_extract_season = subparsers.add_parser("extract_season")
+    all_sp.append(parser_extract_season)
     parser_extract_season.set_defaults(func=extract.extract_season)
 
     parser_extract_run = subparsers.add_parser("extract_run")
+    all_sp.append(parser_extract_run)
     parser_extract_run.set_defaults(func=extract.extract_run)
 
-    for subparser in [parser_extract, parser_extract_season, parser_extract_run]:
-        subparser.add_argument("path")
+    for subparser in [parser_extract_season, parser_extract_run]:
         subparser.add_argument("--gcd", default=None)
         subparser.add_argument("--outdir", required=True)
         subparser.add_argument("--tempdir", default="/tmp")
@@ -72,26 +89,22 @@ def main(description=__doc__):
         subparser.add_argument("--keep-tempfiles-on-fail", action="store_true")
         subparser.add_argument("--procs", type=int, default=cpu_count())
 
-    parser_extract.add_argument("--keys", nargs="+", default=extract.DFLT_KEYS)
     parser_extract_run.add_argument("--keys", nargs="+", default=extract.DFLT_KEYS)
+    parser_extract_season.add_argument(
+        "--sub-event-stream",
+        nargs="+",
+        default=None,
+    )
     parser_extract_season.add_argument(
         "--keys",
         nargs="+",
         default=[k for k in extract.DFLT_KEYS if k not in extract.MC_ONLY_KEYS],
     )
 
-    # Extracting a single file has unique kwargs
-
-    parser_extract_file = subparsers.add_parser("extract_file")
-    parser_extract_file.set_defaults(func=extract.extract)
-    parser_extract_file.add_argument("path")
-    parser_extract_file.add_argument("--outdir", required=True)
-    parser_extract_file.add_argument("--keys", nargs="+", default=None)
-
     # Combine runs is unique
 
     parser_combine_runs = subparsers.add_parser("combine_runs")
-    parser_combine_runs.add_argument("path")
+    all_sp.append(parser_combine_runs)
     parser_combine_runs.add_argument("--outdir", required=True)
     parser_combine_runs.add_argument("--keys", nargs="+", default=None)
     parser_combine_runs.add_argument("--no-mmap", action="store_true")
@@ -100,13 +113,14 @@ def main(description=__doc__):
     # Compress / decompress are similar
 
     parser_compress = subparsers.add_parser("compress")
+    all_sp.append(parser_compress)
     parser_compress.set_defaults(func=cols.compress)
 
     parser_decompress = subparsers.add_parser("decompress")
+    all_sp.append(parser_decompress)
     parser_decompress.set_defaults(func=cols.decompress)
 
     for subparser in [parser_compress, parser_decompress]:
-        subparser.add_argument("path")
         subparser.add_argument("--keys", nargs="+", default=None)
         subparser.add_argument("-k", "--keep", action="store_true")
         subparser.add_argument("-r", "--recurse", action="store_true")
@@ -114,10 +128,12 @@ def main(description=__doc__):
 
     # Simple functions that add columns derived from existing columns (post-proc)
 
-    def func_wrapper(func, path, outdir, outdtype, overwrite):
-        if outdir is None:
-            outdir = path
-        func(path, outdir=outdir, outdtype=outdtype, overwrite=overwrite)
+    def func_wrapper(func):
+        def runit(paths, outdir, outdtype, overwrite):
+            if outdir is None:
+                outdir = path
+            func(paths, outdir=outdir, outdtype=outdtype, overwrite=overwrite)
+        return runit
 
     for funcname in [
         "fit_genie_rw_syst",
@@ -125,8 +141,8 @@ def main(description=__doc__):
         "calc_normed_weights",
     ]:
         subparser = subparsers.add_parser(funcname)
-        subparser.set_defaults(func=partial(func_wrapper, func=getattr(phys, funcname)))
-        subparser.add_argument("path")
+        all_sp.append(subparser)
+        subparser.set_defaults(func=func_wrapper(getattr(phys, funcname)))
         subparser.add_argument("--outdtype", required=False)
         subparser.add_argument("--outdir", required=False)
         subparser.add_argument("--overwrite", action="store_true")
@@ -155,12 +171,25 @@ def main(description=__doc__):
         )
 
     parser_compute_coszen = subparsers.add_parser("compute_coszen")
+    all_sp.append(parser_compute_coszen)
     parser_compute_coszen.set_defaults(func=compute_coszen_wrapper)
-    parser_compute_coszen.add_argument("path")
     parser_compute_coszen.add_argument("--key-path", nargs="+", required=True)
     parser_compute_coszen.add_argument("--outdtype", required=False)
     parser_compute_coszen.add_argument("--outdir", required=False)
     parser_compute_coszen.add_argument("--overwrite", action="store_true")
+
+    # Add args common to all
+
+    for subparser in all_sp:
+        subparser.add_argument(
+            "-0", help="split stdin by null chars (e.g. find -print0 | thisprog)"
+        )
+        args = getargspec(subparser.get_default("func")).args
+        path_argname = None
+        if "paths" in args:
+            subparser.add_argument("paths", nargs="*", default=sys.stdin)
+        elif "path" in args:
+            subparser.add_argument("path", nargs="*", default=sys.stdin)
 
     # Parse command line
 
@@ -168,7 +197,11 @@ def main(description=__doc__):
 
     # Translate command line arguments that don't match functiona arguments
 
-    if "keys" in kwargs and kwargs["keys"] is not None and set(["", "all"]).intersection(kwargs["keys"]):
+    if (
+        "keys" in kwargs
+        and kwargs["keys"] is not None
+        and set(["", "all"]).intersection(kwargs["keys"])
+    ):
         kwargs["keys"] = None
 
     if "no_mmap" in kwargs:
@@ -180,6 +213,29 @@ def main(description=__doc__):
     if func is None:
         parser.parse_args(["--help"])
         return
+
+    for path_argname in ["path", "paths"]:
+        if path_argname not in kwargs:
+            continue
+        path = kwargs.pop(path_argname)
+        splitter = "\0" if kwargs.pop("0") else "\n"
+        if hasattr(path, "read"):  # stdin
+            if path.isatty():
+                parser.parse_args(["--help"])
+                return
+
+            # "if p" removes trailing empty string
+            path = [p for p in path.read().split(splitter) if p]
+
+            if len(path) == 1:
+                path = path[0]
+
+        # extract a single str from the list
+        if len(path) == 1:
+            path = path[0]
+
+        kwargs[path_argname] = path
+        break
 
     func(**kwargs)
 
