@@ -366,12 +366,12 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
     keys : str, iterable thereof, or None; optional
         Only look to compress key directories by these names
 
-    recurse
+    recurse : bool, optional
 
     keep : bool, optional
         Keep the original key directory even after successfully compressing it
 
-    procs
+    procs : int, optional
 
     """
     if isinstance(paths, string_types):

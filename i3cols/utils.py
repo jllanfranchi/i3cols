@@ -45,9 +45,7 @@ except ImportError:
     from collections import Iterable
 from copy import deepcopy
 import errno
-from os import makedirs
-from os import path
-from os.path import abspath, expanduser, expandvars, isdir
+import os
 import re
 
 import numpy as np
@@ -90,7 +88,7 @@ def expand(p):
         Expanded path
 
     """
-    return abspath(expanduser(expandvars(p)))
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(p)))
 
 
 def mkdir(d, mode=0o0770):
@@ -117,13 +115,13 @@ def mkdir(d, mode=0o0770):
     first_created_dir = None
     d_copy = deepcopy(d)
     while d_copy:
-        if isdir(d_copy):
+        if os.path.isdir(d_copy):
             break
         first_created_dir = d_copy
-        d_copy, _ = path.split(d_copy)
+        d_copy, _ = os.path.split(d_copy)
 
     try:
-        makedirs(d, mode=mode)
+        os.makedirs(d, mode=mode)
     except OSError as err:
         if err.errno != errno.EEXIST:
             raise
@@ -193,7 +191,7 @@ def fuse_arrays(arrays):
 # ):
 #     if outdir is not None:
 #         outdir = expand(outdir)
-#         assert isdir(outdir)
+#         assert os.path.isdir(outdir)
 #         assert outkeys is not None
 #
 #     if not overwrite and outdir is not None and outkeys:
