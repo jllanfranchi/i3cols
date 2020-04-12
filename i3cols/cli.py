@@ -60,6 +60,12 @@ def main(description=__doc__):
     subparser.set_defaults(func=extract.extract_files_individually)
     subparser.add_argument("--outdir", required=True)
     subparser.add_argument("--index-and-concatenate", action="store_true")
+    subparser.add_argument("--index-name", default="sourcefile")
+    subparser.add_argument(
+        "--category-name-xform",
+        default=None,
+        choices=["oscNext"],
+    )
     subparser.add_argument("--gcd", default=None)
     subparser.add_argument("--sub-event-stream", nargs="+", default=None)
     subparser.add_argument("--keys", nargs="+", default=None)
@@ -89,7 +95,7 @@ def main(description=__doc__):
         subparser.add_argument("--keep-tempfiles-on-fail", action="store_true")
         subparser.add_argument("--procs", type=int, default=cpu_count())
 
-    parser_extract_run.add_argument("--keys", nargs="+", default=extract.DFLT_KEYS)
+    parser_extract_run.add_argument("--keys", nargs="+", default=None) #extract.DFLT_KEYS)
     parser_extract_season.add_argument(
         "--sub-event-stream",
         nargs="+",
@@ -98,7 +104,8 @@ def main(description=__doc__):
     parser_extract_season.add_argument(
         "--keys",
         nargs="+",
-        default=[k for k in extract.DFLT_KEYS if k not in extract.MC_ONLY_KEYS],
+        default=None,
+        #default=[k for k in extract.DFLT_KEYS if k not in extract.MC_ONLY_KEYS],
     )
 
     # Combine runs is unique
@@ -208,6 +215,14 @@ def main(description=__doc__):
 
     if "no_mmap" in kwargs:
         kwargs["mmap"] = not kwargs.pop("no_mmap")
+
+    category_name_xform = kwargs.pop("category_name_xform", None)
+    if category_name_xform is not None:
+        if category_name_xform == "oscNext":
+            category_name_xform = extract.oscnext_run_subrun_category_name_xform
+        else:
+            raise ValueError(category_name_xform)
+        kwargs["category_name_xform"] = category_name_xform
 
     # Run appropriate function
 

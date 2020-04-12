@@ -32,19 +32,26 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE."""
 
 __all__ = [
-    "RUN_DIR_RE",
+    "I3_FNAME_RE",
+    "I3_DETECTOR_SEASON_RE",
+    "I3_LEVEL_LEVELVER_RE",
+    "I3_PASS_RE",
+    "I3_RUN_RE",
+    "I3_SUBRUN_RE",
+    "I3_PART_RE",
+    "I3_RUN_DIR_RE",
     "IC_SEASON_DIR_RE",
-    "OSCNEXT_I3_FNAME_RE",
-    "MC_ONLY_KEYS",
-    "set_explicit_dtype",
-    "dict2struct",
-    "maptype2np",
+    "I3_OSCNEXT_FNAME_RE",
+    "I3_MC_ONLY_KEYS",
+    "get_i3_data_fname_info",
+    "find_gcd_for_data_file",
     "extract_files_individually",
     "extract_season",
     "extract_run",
     "combine_runs",
     "run_icetray_converter",
     "ConvertI3ToNumpy",
+    "test_IC_DATA_RUN_RE",
     "test_OSCNEXT_I3_FNAME_RE",
 ]
 
@@ -56,7 +63,6 @@ except ImportError:
 from copy import deepcopy
 from glob import glob
 from multiprocessing import Pool, cpu_count
-from numbers import Integral, Number
 import os
 import re
 from shutil import rmtree
@@ -69,7 +75,7 @@ from six import string_types
 
 from i3cols import cols
 from i3cols import dtypes as dt
-from i3cols.utils import expand, mkdir, nsort_key_func
+from i3cols.utils import dict2struct, expand, maptype2np, mkdir, nsort_key_func
 
 try:
     from processing.samples.oscNext.verification.general_mc_data_harvest_and_plot import (
@@ -85,10 +91,28 @@ except ImportError:
 #   the category index
 
 
-I3_DATA_RUN_RE = re.compile(r"Run(?P<run>[0-9]+)", flags=re.IGNORECASE)
+I3_FNAME_RE = re.compile(
+    r"(?P<basename>.*)\.i3(?P<compr_exts>(\..*)*)", flags=re.IGNORECASE
+)
+
+I3_DETECTOR_SEASON_RE = re.compile(
+    "(?P<detector>IC(?:79|86))([^0-9](?P<season>[0-9]+))", flags=re.IGNORECASE
+)
+
+I3_LEVEL_LEVELVER_RE = re.compile(
+    "level(?P<level>[0-9]+)(.?v(?P<levelver>[0-9.]+))?", flags=re.IGNORECASE
+)
+
+I3_PASS_RE = re.compile("pass(?P<pass>[0-9][a-z]?)", flags=re.IGNORECASE)
+
+I3_RUN_RE = re.compile(r"Run(?P<run>[0-9]+)", flags=re.IGNORECASE)
 """Matches MC "run" dirs, e.g. '140000' & data run dirs, e.g. 'Run00125177'"""
 
-RUN_DIR_RE = re.compile(r"(?P<pfx>Run)?(?P<run>[0-9]+)", flags=re.IGNORECASE)
+I3_SUBRUN_RE = re.compile("subrun(?P<subrun>[0-9]+(_[0-9]+)?)", flags=re.IGNORECASE)
+
+I3_PART_RE = re.compile("part(?P<part>[0-9]+)", flags=re.IGNORECASE)
+
+I3_RUN_DIR_RE = re.compile(r"(?P<pfx>Run)?(?P<run>[0-9]+)", flags=re.IGNORECASE)
 """Matches MC "run" dirs, e.g. '140000' & data run dirs, e.g. 'Run00125177'"""
 
 IC_SEASON_DIR_RE = re.compile(
@@ -97,11 +121,7 @@ IC_SEASON_DIR_RE = re.compile(
 )
 """Matches data season dirs, e.g. 'IC86.11' or 'IC86.2011'"""
 
-I3_FNAME_RE = re.compile(
-    r"(?P<basename>.*)\.i3(?P<compr_exts>(\..*)*)", flags=re.IGNORECASE
-)
-
-OSCNEXT_I3_FNAME_RE = re.compile(
+I3_OSCNEXT_FNAME_RE = re.compile(
     r"""
     (?P<basename>oscNext_(?P<kind>\S+?)
         (_IC86\.(?P<season>[0-9]+))?       #  only present for data
@@ -119,8 +139,23 @@ OSCNEXT_I3_FNAME_RE = re.compile(
 )
 
 
-MC_ONLY_KEYS = set(["I3MCWeightDict", "I3MCTree", "I3GENIEResultDict"])
+I3_MC_ONLY_KEYS = set(["I3MCWeightDict", "I3MCTree", "I3GENIEResultDict"])
 """Keys that are only valid for Monte Carlo simulation"""
+
+
+def oscnext_run_subrun_category_name_xform(path):
+    """Transform an oscNext i3 file's path into a (run, subrun) tuple (each
+    np.uint32)"""
+    match = I3_OSCNEXT_FNAME_RE.match(os.path.basename(expand(path)))
+    if not match:
+        raise ValueError(
+            'path "{}" is incompatible with known oscNext naming'
+            ' conventions'.format(path)
+        )
+    groupdict = match.groupdict()
+    run = np.uint32(groupdict["run"].lstrip("0"))
+    subrun = np.uint32(groupdict["subrun"].lstrip("0"))
+    return (run, subrun)
 
 
 MYKEYS = [
@@ -138,7 +173,6 @@ MYKEYS = [
     "L5_oscNext_bool",
     "L6_oscNext_bool",
 ]
-DFLT_KEYS = sorted(set(OSCNEXTKEYS + MYKEYS))
 
 
 def get_i3_data_fname_info(path):
@@ -170,207 +204,26 @@ def get_i3_data_fname_info(path):
     path = os.path.basename(expand(path))
 
     info = OrderedDict()
+    for regex in [
+        I3_FNAME_RE,
+        I3_DETECTOR_SEASON_RE,
+        I3_LEVEL_LEVELVER_RE,
+        I3_PASS_RE,
+        I3_RUN_RE,
+        I3_SUBRUN_RE,
+        I3_PART_RE,
+        I3_SUBRUN_RE,
+    ]:
+        match = regex.match(path)
+        if match:
+            info.update(match.groupdict())
 
-    match = I3_FNAME_RE.match(path)
-    if match:
-        groupdict = match.groupdict()
-        info.update(groupdict)
-
-    match = re.match(
-        "(?P<detector>IC(?:79|86))([^0-9](?P<season>[0-9]+))", path, re.IGNORECASE
-    )
-    if match:
-        info.update(match.groupdict)
-
-    match = re.match(
-        "level(?P<level>[0-9]+)(.?v(?P<levelver>[0-9.]+))?", path, re.IGNORECASE
-    )
-    if match:
-        groupdict = match.groupdict()
-        info.update(groupdict)
-
-    match = re.match("pass([0-9][a-z]?)", path, re.IGNORECASE)
-    if match:
-        info["pass"] = match.groups()[0]
-
-    match = re.match("([0-9]+)", path, re.IGNORECASE)
-    if match:
-        info["run"] = match.groups()[0]
-
-    match = re.match("part([0-9]+)", path, re.IGNORECASE)
-    if match:
-        info["part"] = match.groups()[0]
-
-    match = re.match("subrun(?P<subrun>[0-9]+(_[0-9]+)?)", path, re.IGNORECASE)
-    if match:
-        info.update(match.groupdict())
-
+    # Remove items with None, all-whitespace, or empty-string values
     for key, val in list(info.items()):
-        if not val:
+        if val is None or not val.strip():
             info.pop(key)
 
     return info
-
-
-def set_explicit_dtype(x):
-    """Force `x` to have a numpy type if it doesn't already have one.
-
-    Parameters
-    ----------
-    x : numpy-typed object, bool, integer, float
-        If not numpy-typed, type is attempted to be inferred. Currently only
-        bool, int, and float are supported, where bool is converted to
-        np.bool8, integer is converted to np.int64, and float is converted to
-        np.float64. This ensures that full precision for all but the most
-        extreme cases is maintained for inferred types.
-
-    Returns
-    -------
-    x : numpy-typed object
-
-    Raises
-    ------
-    TypeError
-        In case the type of `x` is not already set or is not a valid inferred
-        type. As type inference can yield different results for different
-        inputs, rather than deal with everything, explicitly failing helps to
-        avoid inferring the different instances of the same object differently
-        (which will cause a failure later on when trying to concatenate the
-        types in a larger array).
-
-    """
-    if hasattr(x, "dtype"):
-        return x
-
-    # "value" attribute is found in basic icecube.{dataclasses,icetray} dtypes
-    # such as I3Bool, I3Double, I3Int, and I3String
-    if hasattr(x, "value"):
-        x = x.value
-
-    # bools are numbers.Integral, so test for bool first
-    if isinstance(x, bool):
-        return np.bool8(x)
-
-    if isinstance(x, Integral):
-        x_new = np.int64(x)
-        assert x_new == x
-        return x_new
-
-    if isinstance(x, Number):
-        x_new = np.float64(x)
-        assert x_new == x
-        return x_new
-
-    if isinstance(x, string_types):
-        x_new = np.string0(x)
-        assert x_new == x
-        return x_new
-
-    raise TypeError("Type of argument ({}) is invalid: {}".format(x, type(x)))
-
-
-def dict2struct(
-    mapping, set_explicit_dtype_func=set_explicit_dtype, only_keys=None, to_numpy=True,
-):
-    """Convert a dict with string keys and numpy-typed values into a numpy
-    array with struct dtype.
-
-
-    Parameters
-    ----------
-    mapping : Mapping
-        The dict's keys are the names of the fields (strings) and the dict's
-        values are numpy-typed objects. If `mapping` is an OrderedMapping,
-        produce struct with fields in that order; otherwise, sort the keys for
-        producing the dict.
-
-    set_explicit_dtype_func : callable with one positional argument, optional
-        Provide a function for setting the numpy dtype of the value. Useful,
-        e.g., for icecube/icetray usage where special software must be present
-        (not required by this module) to do the work. If no specified,
-        the `set_explicit_dtype` function defined in this module is used.
-
-    only_keys : str, sequence thereof, or None; optional
-        Only extract one or more keys; pass None to extract all keys (default)
-
-    to_numpy : bool, optional
-
-
-    Returns
-    -------
-    array : numpy.array of struct dtype
-
-    """
-    if only_keys and isinstance(only_keys, str):
-        only_keys = [only_keys]
-
-    out_vals = []
-    out_dtype = []
-
-    keys = mapping.keys()
-    if not isinstance(mapping, OrderedDict):
-        keys.sort()
-
-    for key in keys:
-        if only_keys and key not in only_keys:
-            continue
-        val = set_explicit_dtype_func(mapping[key])
-        out_vals.append(val)
-        out_dtype.append((key, val.dtype))
-
-    out_vals = tuple(out_vals)
-
-    if to_numpy:
-        return np.array([out_vals], dtype=out_dtype)[0]
-
-    return out_vals, out_dtype
-
-
-def maptype2np(mapping, dtype, to_numpy=True):
-    """Convert a mapping (containing string keys and scalar-typed values) to a
-    single-element Numpy array from the values of `mapping`, using keys
-    defined by `dtype.names`.
-
-    Use this function if you already know the `dtype` you want to end up with.
-    Use `retro.utils.misc.dict2struct` directly if you do not know the dtype(s)
-    of the mapping's values ahead of time.
-
-
-    Parameters
-    ----------
-    mapping : mapping from strings to scalars
-
-    dtype : numpy.dtype
-        If scalar dtype, convert via `utils.dict2struct`. If structured dtype,
-        convert keys specified by the struct field names and values are
-        converted according to the corresponding type.
-
-
-    Returns
-    -------
-    array : shape-(1,) numpy.ndarray of dtype `dtype`
-
-
-    See Also
-    --------
-    dict2struct
-        Convert from a mapping to a numpy.ndarray, dynamically building `dtype`
-        as you go (i.e., this is not known a priori)
-
-    mapscalarattrs2np
-
-    """
-    out_vals = []
-    for name in dtype.names:
-        val = mapping[name]
-        if np.isscalar(val):
-            out_vals.append(val)
-        else:
-            out_vals.append(tuple(val))
-    out_vals = tuple(out_vals)
-    if to_numpy:
-        return np.array([out_vals], dtype=dtype)[0]
-    return out_vals, dtype
 
 
 def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
@@ -396,7 +249,7 @@ def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
     gcd_dir = expand(gcd_dir)
     assert os.path.isdir(gcd_dir)
 
-    match = I3_DATA_RUN_RE.match(os.path.basename(datafilename))
+    match = I3_RUN_RE.match(os.path.basename(datafilename))
     if match:
         run = match.groupdict()["run"].lstrip("0")
         run_gcd_re = re.compile(
@@ -423,6 +276,8 @@ def extract_files_individually(
     paths,
     outdir,
     index_and_concatenate,
+    index_name="sourcefile",
+    category_name_xform=None,
     gcd=None,
     sub_event_stream=None,
     keys=None,
@@ -430,7 +285,7 @@ def extract_files_individually(
     compress=False,
     tempdir=None,
     keep_tempfiles_on_fail=False,
-    procs=cpu_count(),
+    procs=None,
 ):
     """Exctract i3 files "individually" (if specified, an appropriate GCD file
     will also be read before a given i3 data file -- e.g., if pulses are to be
@@ -440,15 +295,64 @@ def extract_files_individually(
     ----------
     paths : str or iterable thereof
     outdir : str
+        Resulting i3cols column directories (or .npz files if `compress` is
+        True) are placed in `outdir` if `index_and_concatenate` is True or
+        within subdirectories inside of `outdir` if `index_and_concatenate` is
+        False.
     index_and_concatenate : bool
+        Whether to concatenate the columns extracted from each individual i3
+        file. If so, a category index is created for the concatenated columns
+        to indicate which values came from which file (see `index_name` and
+        `category_name_xform` args)
+    index_name : str, optional
+        By default, category index (if `index_and_concatenate` is True) is named
+        "sourcefile" (so the full filename is "sourcefile__category_index.npy")
+        due to the default for catgory naming convention (see
+        `category_name_xform`)
+    category_name_xform : callable or None, optional
+        Create a name for the categories in a category index (if
+        `index_and_concatenate` is True) or the name of the subdirectories
+        created within `outdir` (if `index_and_concatenate` is False). Called
+        via `category_name_xform(full_path)`, i.e. with the
+        user/variable-expanded absolute path (but not with symlinks resolved)
+        of each file which has events extracted from it. If None is specified
+        (the default), categories are named by the the uncommon trailing parts
+        of each source i3 file's path (with i3 & compression extensions
+        removed).
     gcd : str, iterable thereof, or None; optional
+        If `gcd` is None, no GCD file is read prior to extracting each file in
+        `paths`. If `gcd` is a path to a single GCD file, this file is read in
+        before each file in `paths` is extracted; in pseudo-code: extract(gcd,
+        path); extract(gcd, path); etc. If `gcd` is a path to a directory, the
+        directory is searched for a GCD file matching a "Run" specification in
+        the source filename.
     sub_event_stream : str, iterable thereof, or None; optional
+        Only extract frames with the specified sub event streams; if None,
+        extract all sub event streams.
     keys : str, iterable thereof, or None; optional
+        Only extract at most the keys specified here (if some or all are
+        missing for a frame, they are simply ignored). If None is provided,
+        extract all keys that are possible to extract with `ConvertI3ToNumpy`.
     overwrite : bool, optional
+        Currently this has to be True, but in the future `overwrite=False`
+        logic should be worked out to error out before much/any extraction
+        occurs to avoid overwriting files and performing redundant extractions
     compress : bool, optional
+        After the extraction is complete, compress the column directories into
+        `.npz` files (and remove the original directories)?
     tempdir : str, optional
+        If `index_and_concatenate` is True, the individually extracted arrays
+        are placed in a sub-directory within `tempdir` before
+        indexing/concatenating and placing the final results in `outdir`.
+        `tempdir` is unused if `index_and_concatenate` is False.
     keep_tempfiles_on_fail : bool, optional
-    procs : int >= 1, optional
+        If `index_and_concatenate` is True and an error occurs, tempfiles that
+        are created within `tempdir` will be kept. (Otherwise, these are
+        automatically deleted, if at all possible.)
+    procs : None or int >= 1, optional
+        Number of processes to use for extracting files in parallel. If None
+        specified, defaults to `multiprocessing.cpu_count()` (i.e., takes over
+        an entire system!)
 
     Notes
     -----
@@ -498,6 +402,9 @@ def extract_files_individually(
         paths = [paths]
     full_paths = [expand(p) for p in sorted(paths, key=nsort_key_func)]
 
+    if procs is None:
+        procs = cpu_count()
+
     # Formulate enough of the path to disambiguate all files from one another.
 
     simplified_paths = []
@@ -534,6 +441,11 @@ def extract_files_individually(
     if len(set(simplified_paths)) < len(simplified_paths):
         raise ValueError("Duplicated paths detected: {}".format(paths))
 
+    if category_name_xform is None:
+        category_names = simplified_paths
+    else:
+        category_names = [category_name_xform(full_path) for full_path in full_paths]
+
     gcd_is_dir = False
     if gcd is not None:
         gcd = expand(gcd)
@@ -549,7 +461,7 @@ def extract_files_individually(
 
     if tempdir is not None:
         if not index_and_concatenate:
-            print("`tempdir` is not used if `index_and_concatenate` is False")
+            print("NOTE: `tempdir` is not used if `index_and_concatenate` is False")
         else:
             tempdir = expand(tempdir)
 
@@ -573,7 +485,7 @@ def extract_files_individually(
     full_tempdir = None
     paths_to_compress = []
     results = []
-    sourcefile_array_map = OrderedDict()
+    category_array_map = OrderedDict()
     pool = None
     if procs > 1:
         pool = Pool(min(procs, len(full_paths)))
@@ -583,12 +495,12 @@ def extract_files_individually(
                 mkdir(tempdir)
             full_tempdir = mkdtemp(dir=tempdir)
 
-        for full_path, simplified_path in zip(full_paths, simplified_paths):
+        for full_path, category_name in zip(full_paths, category_names):
             if index_and_concatenate:
-                thisfile_outdir = os.path.join(full_tempdir, simplified_path)
-                sourcefile_array_map[simplified_path] = thisfile_outdir
+                thisfile_outdir = os.path.join(full_tempdir, category_name)
+                category_array_map[category_name] = thisfile_outdir
             else:
-                thisfile_outdir = os.path.join(outdir, simplified_path)
+                thisfile_outdir = os.path.join(outdir, category_name)
                 if compress:
                     paths_to_compress.append(thisfile_outdir)
 
@@ -598,7 +510,7 @@ def extract_files_individually(
                 gcd_file = deepcopy(gcd)
                 if gcd_is_dir:
                     gcd_file = find_gcd_for_data_file(
-                        datafilename=os.path.basename(simplified_path), gcd_dir=gcd
+                        datafilename=os.path.basename(full_path), gcd_dir=gcd
                     )
                 extract_paths = [gcd_file, full_path]
 
@@ -624,13 +536,13 @@ def extract_files_individually(
             result.get()
 
         if index_and_concatenate:
-            for simplified_path, thisfile_outdir in list(sourcefile_array_map.items()):
-                sourcefile_array_map[simplified_path], _ = cols.find_array_paths(
+            for category_name, thisfile_outdir in list(category_array_map.items()):
+                category_array_map[category_name], _ = cols.find_array_paths(
                     thisfile_outdir
                 )
             cols.index_and_concatenate_arrays(
-                category_array_map=sourcefile_array_map,
-                category_name="sourcefile",
+                category_array_map=category_array_map,
+                index_name=index_name,
                 outdir=outdir,
             )
             if compress:
@@ -743,13 +655,13 @@ def extract_season(
                 if redundant_keys:
                     print("will not extract existing keys:", sorted(redundant_keys))
                     keys = [k for k in keys if k not in redundant_keys]
-            invalid_keys = MC_ONLY_KEYS.intersection(keys)
+            invalid_keys = I3_MC_ONLY_KEYS.intersection(keys)
             if invalid_keys:
                 print(
                     "MC-only keys {} were specified but this is data, so these"
                     " will be skipped.".format(sorted(invalid_keys))
                 )
-            keys = [k for k in keys if k not in MC_ONLY_KEYS]
+            keys = [k for k in keys if k not in I3_MC_ONLY_KEYS]
             print("keys remaining to extract:", keys)
 
             if len(keys) == 0:
@@ -758,7 +670,7 @@ def extract_season(
 
         run_dirpaths = []
         for basepath in sorted(os.listdir(path), key=nsort_key_func):
-            match = RUN_DIR_RE.match(basepath)
+            match = I3_RUN_DIR_RE.match(basepath)
             if not match:
                 continue
             groupdict = match.groupdict()
@@ -881,7 +793,7 @@ def extract_run(
             mkdir(tempdir)
         full_tempdir = mkdtemp(dir=tempdir)
 
-        match = RUN_DIR_RE.match(os.path.basename(path))
+        match = I3_RUN_DIR_RE.match(os.path.basename(path))
         assert match, 'path not a run directory? "{}"'.format(os.path.basename(path))
         groupdict = match.groupdict()
 
@@ -918,13 +830,13 @@ def extract_run(
                     print("will not extract existing keys:", sorted(redundant_keys))
                     keys = [k for k in keys if k not in redundant_keys]
             if is_data:
-                invalid_keys = MC_ONLY_KEYS.intersection(keys)
+                invalid_keys = I3_MC_ONLY_KEYS.intersection(keys)
                 if invalid_keys:
                     print(
                         "MC-only keys {} were specified but this is data, so these"
                         " will be skipped.".format(sorted(invalid_keys))
                     )
-                keys = [k for k in keys if k not in MC_ONLY_KEYS]
+                keys = [k for k in keys if k not in I3_MC_ONLY_KEYS]
 
             print("keys remaining to extract:", keys)
 
@@ -934,7 +846,7 @@ def extract_run(
 
         subrun_filepaths = []
         for basepath in sorted(os.listdir(path), key=nsort_key_func):
-            match = OSCNEXT_I3_FNAME_RE.match(basepath)
+            match = I3_OSCNEXT_FNAME_RE.match(basepath)
             if not match:
                 continue
             groupdict = match.groupdict()
@@ -978,7 +890,7 @@ def extract_run(
                     arrays[key] = result.get()
 
             cols.index_and_concatenate_arrays(
-                arrays, category_name="subrun", outdir=outdir, mmap=mmap,
+                arrays, index_name="subrun", outdir=outdir, mmap=mmap,
             )
 
         else:  # is_data
@@ -1043,7 +955,7 @@ def combine_runs(path, outdir, keys=None, mmap=True):
         subpath = os.path.join(path, subname)
         if not os.path.isdir(subpath):
             continue
-        match = RUN_DIR_RE.match(subname)
+        match = I3_RUN_DIR_RE.match(subname)
         if not match:
             continue
         groupdict = match.groupdict()
@@ -1067,7 +979,7 @@ def combine_runs(path, outdir, keys=None, mmap=True):
     cols.index_and_concatenate_arrays(
         category_array_map=array_map,
         existing_category_indexes=existing_category_indexes,
-        category_name="run",
+        index_name="run",
         category_dtype=np.uint32,  # see retro_types.I3EVENTHEADER_T
         outdir=outdir,
         mmap=mmap,
@@ -1676,7 +1588,7 @@ class ConvertI3ToNumpy(object):
         keys defined by `subdtype.names`.
 
         Use this function if you already know the `subdtype` you want to end up
-        with. Use `retro.utils.misc.dict2struct` directly if you do not know
+        with. Use `i3cols.utils.dict2struct` directly if you do not know
         the dtype(s) of the mapping's values ahead of time.
 
 
@@ -1685,9 +1597,9 @@ class ConvertI3ToNumpy(object):
         mapping : mapping from strings to scalars
 
         dtype : numpy.dtype
-            If scalar dtype, convert via `utils.dict2struct`. If structured
-            dtype, convert keys specified by the struct field names and values
-            are converted according to the corresponding type.
+            If scalar dtype, convert via `i3cols.utils.dict2struct`. If
+            structured dtype, convert keys specified by the struct field names
+            and values are converted according to the corresponding type.
 
 
         Returns
@@ -1697,7 +1609,7 @@ class ConvertI3ToNumpy(object):
 
         See Also
         --------
-        dict2struct
+        i3cols.utils.dict2struct
             Convert from a mapping to a numpy.ndarray, dynamically building `dtype`
             as you go (i.e., this is not known a priori)
 
@@ -1834,8 +1746,9 @@ class ConvertI3ToNumpy(object):
 
 
 def test_IC_DATA_RUN_RE():
-    """Unit tests for OSCNEXT_I3_FNAME_RE."""
+    """Unit tests for I3_OSCNEXT_FNAME_RE."""
     # pylint: disable=line-too-long
+
     test_cases = [
         (
             "/tmp/i3/data/level7_v01.04/IC86.11/Run00118552/oscNext_data_IC86.11_level7_v01.04_pass2_Run00118552_Subrun00000009.i3.zst",
@@ -2059,9 +1972,9 @@ def test_IC_DATA_RUN_RE():
 
 
 def test_OSCNEXT_I3_FNAME_RE():
-
-    """Unit tests for OSCNEXT_I3_FNAME_RE."""
+    """Unit tests for I3_OSCNEXT_FNAME_RE."""
     # pylint: disable=line-too-long
+
     test_cases = [
         (
             "oscNext_data_IC86.12_level5_v01.04_pass2_Run00120028_Subrun00000000.i3.zst",
@@ -2157,7 +2070,7 @@ def test_OSCNEXT_I3_FNAME_RE():
 
     for test_input, expected_output in test_cases:
         try:
-            match = OSCNEXT_I3_FNAME_RE.match(test_input)
+            match = I3_OSCNEXT_FNAME_RE.match(test_input)
             groupdict = match.groupdict()
 
             ref_keys = set(expected_output.keys())
@@ -2188,3 +2101,8 @@ def test_OSCNEXT_I3_FNAME_RE():
         except Exception:
             sys.stderr.write('Failure on test input = "{}"\n'.format(test_input))
             raise
+
+
+if __name__ == "__main__":
+    test_IC_DATA_RUN_RE()
+    test_OSCNEXT_I3_FNAME_RE()

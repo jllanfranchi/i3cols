@@ -466,7 +466,7 @@ def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
     """
     if isinstance(paths, string_types):
         paths = [paths]
-    paths = [expand(p) for p in path]
+    paths = [expand(p) for p in paths]
 
     if isinstance(keys, string_types):
         keys = set([keys])
@@ -757,7 +757,7 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
 def index_and_concatenate_arrays(
     category_array_map,
     existing_category_indexes=None,
-    category_name=None,
+    index_name=None,
     category_dtype=None,
     outdir=None,
     mmap=True,
@@ -776,11 +776,10 @@ def index_and_concatenate_arrays(
 
     existing_category_indexes : mapping of mappings or None, optional
 
-    category_name : str, optional
-        Name of the category being indexed, i.e., keys in `category_array_map`.
-        This is used both to formulate the structured dtype used for the index
-        and to formulate the file (if `outdir` is specified) in which to save
-        the category index.
+    index_name : str, optional
+        Name of the index; what describes the categories being indexed? This is
+        used both to formulate the structured dtype used for the index and to
+        formulate the file name it is saved to (if `outdir` is specified).
 
     category_dtype : numpy.dtype or None, optional
         If None, use the type Numpy infers, found via .. ::
@@ -795,10 +794,10 @@ def index_and_concatenate_arrays(
     Returns
     -------
     category_indexes : dict
-        Minimally contains key `category_name` with value a
+        Minimally contains key `index_name` with value a
         shape-(num_categories,) numpy ndarray of custom dtype .. ::
 
-            [(category_name, category_dtype), ("index", retro_types.START_STOP_T)]
+            [(index_name, category_dtype), ("index", retro_types.START_STOP_T)]
 
     arrays : dict of dicts containing arrays
 
@@ -808,8 +807,8 @@ def index_and_concatenate_arrays(
             "concatenating existing_category_indexes not implemented"
         )
 
-    if category_name is None:
-        category_name = "category"
+    if index_name is None:
+        index_name = "category"
 
     parent_outdir_created = None
     if outdir is not None:
@@ -909,7 +908,7 @@ def index_and_concatenate_arrays(
             print(
                 "category {}, {}={}: scalar array len={},"
                 " total scalar array len={}".format(
-                    n, category_name, category, scalar_array_length, total_scalar_length
+                    n, index_name, category, scalar_array_length, total_scalar_length
                 )
             )
 
@@ -922,11 +921,11 @@ def index_and_concatenate_arrays(
         categories = np.array(list(category_array_map.keys()), dtype=category_dtype)
         category_dtype = categories.dtype
         category_index_dtype = np.dtype(
-            [(category_name, category_dtype), ("index", dt.START_STOP_T)]
+            [(index_name, category_dtype), ("index", dt.START_STOP_T)]
         )
         if outdir is not None:
             category_index = np.lib.format.open_memmap(
-                join(outdir, category_name + CATEGORY_INDEX_POSTFIX),
+                join(outdir, index_name + CATEGORY_INDEX_POSTFIX),
                 mode="w+",
                 shape=(len(categories),),
                 dtype=category_index_dtype,
@@ -1022,7 +1021,7 @@ def index_and_concatenate_arrays(
             vector_start = vector_stop = 0
             for category, array_dicts in category_array_map.items():
                 scalar_start, scalar_stop = category_index[
-                    category_index[category_name] == category
+                    category_index[index_name] == category
                 ][0]["index"]
 
                 key_arrays = array_dicts.get(key, None)
@@ -1065,7 +1064,7 @@ def index_and_concatenate_arrays(
                 concatenated_arrays[key]["valid"] = valid
 
         category_indexes = OrderedDict()
-        category_indexes[category_name] = category_index
+        category_indexes[index_name] = category_index
         # TODO: put concatenated existing_category_indexes here, too
 
     except Exception:
