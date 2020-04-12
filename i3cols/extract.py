@@ -57,8 +57,7 @@ from copy import deepcopy
 from glob import glob
 from multiprocessing import Pool, cpu_count
 from numbers import Integral, Number
-from os import listdir, walk
-from os.path import basename, isdir, isfile, join
+import os
 import re
 from shutil import rmtree
 import sys
@@ -168,7 +167,7 @@ def get_i3_data_fname_info(path):
         Only keys present are those for which information was found.
 
     """
-    path = basename(expand(path))
+    path = os.path.basename(expand(path))
 
     info = OrderedDict()
 
@@ -395,15 +394,15 @@ def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
 
     """
     gcd_dir = expand(gcd_dir)
-    assert isdir(gcd_dir)
+    assert os.path.isdir(gcd_dir)
 
-    match = I3_DATA_RUN_RE.match(basename(datafilename))
+    match = I3_DATA_RUN_RE.match(os.path.basename(datafilename))
     if match:
         run = match.groupdict()["run"].lstrip("0")
         run_gcd_re = re.compile(
             r"run0*{}.*gcd.*\.i3.*".format(run), flags=re.IGNORECASE
         )
-        for dirpath, dirs, files in walk(gcd_dir, followlinks=True):
+        for dirpath, dirs, files in os.walk(gcd_dir, followlinks=True):
             if recurse:
                 dirs.sort(key=nsort_key_func)
             else:
@@ -411,7 +410,7 @@ def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
             files.sort(key=nsort_key_func)
             for filename in files:
                 if run_gcd_re.match(filename):
-                    return join(dirpath, filename)
+                    return os.path.join(dirpath, filename)
 
     raise IOError(
         'Could not find GCD in dir "{}" for data run file "{}"'.format(
@@ -477,7 +476,10 @@ def extract_files_individually(
             index into the concatenated array. This category index can be
             re-formulated later with more intelligent labeling specific to the
             filenames (e.g., if each file represents a subrun, the subrun
-            number can be used instead of the full file name)
+            number can be used instead of the full file name). Note that, in
+            the case of ambiguous filenames, path(s) to the files are included
+            in the index to disambiguate which source file contributed which
+            events
 
         2. Written to subdirectories within `outdir` named after the source
             file's basename (with ".i3*" extension(s) removed)
@@ -494,14 +496,50 @@ def extract_files_individually(
 
     if isinstance(paths, string_types):
         paths = [paths]
-    paths = [expand(p) for p in sorted(paths, key=nsort_key_func)]
+    full_paths = [expand(p) for p in sorted(paths, key=nsort_key_func)]
+
+    # Formulate enough of the path to disambiguate all files from one another.
+
+    simplified_paths = []
+    for path in full_paths:
+        head, tail = os.path.split(path)
+        match = I3_FNAME_RE.match(tail)
+        if match:
+            groupdict = match.groupdict()
+            tail = groupdict["basename"]
+        simplified_paths.append(os.path.join(head, tail))
+
+    # Remove the common part, and make sure root dir isn't referenced (if not
+    # index_and_concatenate, we will join as a subfolder of `outdir`; doing
+    # join(outdir, "/absolute/path") yields "/absolute/path" which will write
+    # to the source dir
+    fewest_path_elements = np.inf
+    split_sps = []
+    for simplified_path in simplified_paths:
+        split_path = simplified_path.split(os.path.sep)
+        split_sps.append(split_path)
+        fewest_path_elements = min(fewest_path_elements, len(split_path))
+
+    # TODO: when we drop py2, py3 has os.path.commonpath!
+    for n_parts_common in range(fewest_path_elements):
+        st = set(tuple(p[: n_parts_common + 1]) for p in split_sps)
+        if len(st) != 1:
+            break
+
+    simplified_paths = [
+        os.path.sep.join(p[n_parts_common:]).lstrip("/") for p in split_sps
+    ]
+
+    # Duplicate (ignoring compression extension(s)) paths are illegal.
+    if len(set(simplified_paths)) < len(simplified_paths):
+        raise ValueError("Duplicated paths detected: {}".format(paths))
 
     gcd_is_dir = False
     if gcd is not None:
         gcd = expand(gcd)
-        gcd_is_dir = isdir(gcd)
+        gcd_is_dir = os.path.isdir(gcd)
         if not gcd_is_dir:
-            assert isfile(gcd)
+            assert os.path.isfile(gcd)
 
     if isinstance(sub_event_stream, string_types):
         sub_event_stream = [sub_event_stream]
@@ -523,7 +561,7 @@ def extract_files_individually(
             existing_keys = set(existing_arrays.keys())
             redundant_keys = existing_keys.intersection(keys)
             if redundant_keys:
-                print("will not extract existing keys:", sorted(redundant_keys))
+                print("Will not extract existing keys:", sorted(redundant_keys))
                 keys = [k for k in keys if k not in redundant_keys]
 
         if len(keys) == 0:
@@ -534,37 +572,35 @@ def extract_files_individually(
 
     full_tempdir = None
     paths_to_compress = []
+    results = []
     sourcefile_array_map = OrderedDict()
     pool = None
     if procs > 1:
-        pool = Pool(procs)
+        pool = Pool(min(procs, len(full_paths)))
     try:
         if index_and_concatenate:
             if tempdir is not None:
                 mkdir(tempdir)
             full_tempdir = mkdtemp(dir=tempdir)
 
-        for path in paths:
-            orig_path = deepcopy(path)
-            match = I3_FNAME_RE.match(basename(path))
-            if match:
-                path = match.groupdict()["basename"]
-
+        for full_path, simplified_path in zip(full_paths, simplified_paths):
             if index_and_concatenate:
-                thisfile_outdir = join(full_tempdir, path)
-                sourcefile_array_map[path] = thisfile_outdir
+                thisfile_outdir = os.path.join(full_tempdir, simplified_path)
+                sourcefile_array_map[simplified_path] = thisfile_outdir
             else:
-                thisfile_outdir = join(outdir, path)
+                thisfile_outdir = os.path.join(outdir, simplified_path)
                 if compress:
                     paths_to_compress.append(thisfile_outdir)
 
             if gcd is None:
-                extract_paths = [orig_path]
+                extract_paths = [full_path]
             else:
                 gcd_file = deepcopy(gcd)
                 if gcd_is_dir:
-                    gcd_file = find_gcd_for_data_file(datafilename=path, gcd_dir=gcd)
-                extract_paths = [gcd_file, orig_path]
+                    gcd_file = find_gcd_for_data_file(
+                        datafilename=os.path.basename(simplified_path), gcd_dir=gcd
+                    )
+                extract_paths = [gcd_file, full_path]
 
             kwargs = dict(
                 paths=extract_paths,
@@ -576,15 +612,22 @@ def extract_files_individually(
             if procs == 1:
                 run_icetray_converter(**kwargs)
             else:
-                pool.apply_async(run_icetray_converter, tuple(), kwargs)
+                results.append(
+                    pool.apply_async(run_icetray_converter, tuple(), kwargs)
+                )
 
         if pool is not None:
             pool.close()
             pool.join()
 
+        for result in results:
+            result.get()
+
         if index_and_concatenate:
-            for path, thisfile_outdir in list(sourcefile_array_map.items()):
-                sourcefile_array_map[path], _ = cols.find_array_paths(thisfile_outdir)
+            for simplified_path, thisfile_outdir in list(sourcefile_array_map.items()):
+                sourcefile_array_map[simplified_path], _ = cols.find_array_paths(
+                    thisfile_outdir
+                )
             cols.index_and_concatenate_arrays(
                 category_array_map=sourcefile_array_map,
                 category_name="sourcefile",
@@ -630,45 +673,6 @@ def extract_files_individually(
         cols.compress(paths=paths_to_compress, recurse=True, keep=False, procs=procs)
 
 
-# def extract(path, **kwargs):
-#     """Dispatch proper extraction function based on `path`"""
-#     path = expand(path)
-#
-#     if isinstance(path, Sequence) and not isinstance(path, string_types):
-#         return extract_run(path=path, **kwargs)
-#
-#     if isfile(path):
-#         for excess_kw in [
-#             "gcd", "keep_tempfiles_on_fail", "tempdir", "mmap", "overwrite", "procs"
-#         ]:
-#             kwargs.pop(excess_kw, None)
-#
-#         converter = ConvertI3ToNumpy()
-#         return converter.extract_file(path=path, **kwargs)
-#
-#     assert isdir(path), path
-#
-#     match = IC_SEASON_DIR_RE.match(basename(path))
-#     if match:
-#         print(
-#             "Will extract IceCube season dir {}; filename metadata={}".format(
-#                 path, match.groupdict()
-#             )
-#         )
-#         return extract_season(path=path, **kwargs)
-#
-#     match = RUN_DIR_RE.match(basename(path))
-#     if match:
-#         print(
-#             "Will extract data or MC run dir {}; metadata={}".format(
-#                 path, match.groupdict()
-#             )
-#         )
-#         return extract_run(path=path, **kwargs)
-#
-#     raise ValueError('Do not know what to do with path "{}"'.format(path))
-
-
 def extract_season(
     path,
     outdir=None,
@@ -698,7 +702,7 @@ def extract_season(
 
     """
     path = expand(path)
-    assert isdir(path), path
+    assert os.path.isdir(path), path
 
     outdir = expand(outdir)
     if tempdir is not None:
@@ -714,13 +718,13 @@ def extract_season(
             gcd = path
         assert isinstance(gcd, string_types)
         gcd = expand(gcd)
-        assert isdir(gcd)
+        assert os.path.isdir(gcd)
 
         if isinstance(keys, string_types):
             keys = [keys]
 
-        match = IC_SEASON_DIR_RE.match(basename(path))
-        assert match, 'path not a season directory? "{}"'.format(basename(path))
+        match = IC_SEASON_DIR_RE.match(os.path.basename(path))
+        assert match, 'path not a season directory? "{}"'.format(os.path.basename(path))
         groupdict = match.groupdict()
 
         year_str = groupdict["year"]
@@ -753,13 +757,13 @@ def extract_season(
                 return
 
         run_dirpaths = []
-        for basepath in sorted(listdir(path), key=nsort_key_func):
+        for basepath in sorted(os.listdir(path), key=nsort_key_func):
             match = RUN_DIR_RE.match(basepath)
             if not match:
                 continue
             groupdict = match.groupdict()
             run_int = np.uint32(groupdict["run"])
-            run_dirpaths.append((run_int, join(path, basepath)))
+            run_dirpaths.append((run_int, os.path.join(path, basepath)))
         # Ensure sorting by run
         run_dirpaths.sort()
 
@@ -770,7 +774,7 @@ def extract_season(
         if procs > 1:
             pool = Pool(procs)
         for run, run_dirpath in run_dirpaths:
-            run_tempdir = join(full_tempdir, "Run{}".format(run))
+            run_tempdir = os.path.join(full_tempdir, "Run{}".format(run))
             mkdir(run_tempdir)
             run_tempdirs.append(run_tempdir)
 
@@ -858,7 +862,7 @@ def extract_run(
 
     """
     path = expand(path)
-    assert isdir(path), path
+    assert os.path.isdir(path), path
 
     outdir = expand(outdir)
     if tempdir is not None:
@@ -877,8 +881,8 @@ def extract_run(
             mkdir(tempdir)
         full_tempdir = mkdtemp(dir=tempdir)
 
-        match = RUN_DIR_RE.match(basename(path))
-        assert match, 'path not a run directory? "{}"'.format(basename(path))
+        match = RUN_DIR_RE.match(os.path.basename(path))
+        assert match, 'path not a run directory? "{}"'.format(os.path.basename(path))
         groupdict = match.groupdict()
 
         is_data = groupdict["pfx"] is not None
@@ -888,7 +892,7 @@ def extract_run(
 
         if is_mc:
             print("is_mc")
-            assert isinstance(gcd, string_types) and isfile(expand(gcd)), str(gcd)
+            assert isinstance(gcd, string_types) and os.path.isfile(expand(gcd)), str(gcd)
             gcd = expand(gcd)
         else:
             print("is_data")
@@ -896,10 +900,10 @@ def extract_run(
                 gcd = path
             assert isinstance(gcd, string_types)
             gcd = expand(gcd)
-            if not isfile(gcd):
-                assert isdir(gcd)
+            if not os.path.isfile(gcd):
+                assert os.path.isdir(gcd)
                 # TODO: use DATA_GCD_FNAME_RE
-                gcd = glob(join(gcd, "*Run{}*GCD*.i3*".format(run_str)))
+                gcd = glob(os.path.join(gcd, "*Run{}*GCD*.i3*".format(run_str)))
                 assert len(gcd) == 1, gcd
                 gcd = expand(gcd[0])
 
@@ -929,14 +933,14 @@ def extract_run(
                 return
 
         subrun_filepaths = []
-        for basepath in sorted(listdir(path), key=nsort_key_func):
+        for basepath in sorted(os.listdir(path), key=nsort_key_func):
             match = OSCNEXT_I3_FNAME_RE.match(basepath)
             if not match:
                 continue
             groupdict = match.groupdict()
             assert int(groupdict["run"]) == run_int
             subrun_int = int(groupdict["subrun"])
-            subrun_filepaths.append((subrun_int, join(path, basepath)))
+            subrun_filepaths.append((subrun_int, os.path.join(path, basepath)))
         # Ensure sorting by subrun
         subrun_filepaths.sort()
 
@@ -953,7 +957,7 @@ def extract_run(
                 print(fpath)
                 paths = [gcd, fpath]
 
-                subrun_tempdir = join(full_tempdir, "subrun{}".format(subrun))
+                subrun_tempdir = os.path.join(full_tempdir, "subrun{}".format(subrun))
                 mkdir(subrun_tempdir)
                 subrun_tempdirs.append(subrun_tempdir)
 
@@ -1031,13 +1035,13 @@ def combine_runs(path, outdir, keys=None, mmap=True):
 
     """
     path = expand(path)
-    assert isdir(path), str(path)
+    assert os.path.isdir(path), str(path)
     outdir = expand(outdir)
 
     run_dirs = []
-    for subname in sorted(listdir(path), key=nsort_key_func):
-        subpath = join(path, subname)
-        if not isdir(subpath):
+    for subname in sorted(os.listdir(path), key=nsort_key_func):
+        subpath = os.path.join(path, subname)
+        if not os.path.isdir(subpath):
             continue
         match = RUN_DIR_RE.match(subname)
         if not match:
@@ -1270,6 +1274,9 @@ class ConvertI3ToNumpy(object):
         Parameters
         ----------
         frame : icetray.I3Frame
+        sub_event_stream : str, iterable thereof, or None; optional
+            Only process frames from these sub event streams. If None, process
+            all sub event streams.
         keys : str, iterable thereof, or None, optional
             Extract only these keys
 
@@ -1284,14 +1291,12 @@ class ConvertI3ToNumpy(object):
         if frame.Stop != self.icetray.I3Frame.Physics:
             return False
 
-        if isinstance(sub_event_stream, string_types):
-            sub_event_stream = [sub_event_stream]
-
-        if (
-            sub_event_stream is not None
-            and frame["I3EventHeader"].sub_event_stream not in sub_event_stream
-        ):
-            return False
+        if sub_event_stream is not None:
+            if isinstance(sub_event_stream, string_types):
+                if frame["I3EventHeader"].sub_event_stream != sub_event_stream:
+                    return False
+            elif frame["I3EventHeader"].sub_event_stream not in set(sub_event_stream):
+                return False
 
         frame_data = self.extract_frame(frame, keys=keys)
         self.frame_data.append(frame_data)
@@ -1318,107 +1323,6 @@ class ConvertI3ToNumpy(object):
         arrays = cols.construct_arrays(self.frame_data, outdir=outdir)
         del self.frame_data[:]
         return arrays
-
-    # def extract_files(self, paths, keys=None):
-    #     """Extract info from one or more i3 file(s)
-
-    #     Parameters
-    #     ----------
-    #     paths : str or iterable thereof
-    #     keys : str, iterable thereof, or None; optional
-
-    #     Returns
-    #     -------
-    #     arrays : OrderedDict
-
-    #     """
-    #     raise NotImplementedError(
-    #         """I3FrameSequence doesn't allow reading multiple files reliably
-    #         while preserving GCD information for current frame. Until bug is
-    #         fixed, this is disabled as unreliable, and use as icetray module
-    #         instead."""
-    #     )
-    #     if isinstance(paths, str):
-    #         paths = [paths]
-    #     paths = [expand(path) for path in paths]
-    #     i3file_iterator = self.dataio.I3FrameSequence()
-    #     try:
-    #         extracted_data = []
-    #         for path in paths:
-    #             i3file_iterator.add_file(path)
-    #             while i3file_iterator.more():
-    #                 frame = i3file_iterator.pop_frame()
-    #                 if frame.Stop != self.icetray.I3Frame.Physics:
-    #                     continue
-    #                 data = self.extract_frame(frame=frame, keys=keys)
-    #                 extracted_data.append(data)
-    #             i3file_iterator.close_last_file()
-    #     finally:
-    #         i3file_iterator.close()
-
-    #     return construct_arrays(extracted_data)
-
-    def extract_file(
-        self, path, sub_event_stream=None, keys=None, construct_arrays=True, outdir=None
-    ):
-        if outdir is not None and not construct_arrays:
-            raise ValueError(
-                "`outdir` is specified, but without"
-                " `construct_arrays=True`, nothing will be saved to disk"
-            )
-
-        print('extracting "{}"'.format(path))
-        extracted_data = []
-        i3file = self.dataio.I3File(path)
-        try:
-            while i3file.more():
-                frame = i3file.pop_frame()
-                if frame.Stop != self.icetray.I3Frame.Physics:
-                    continue
-                if (
-                    sub_event_stream
-                    and frame["I3EventHeader"].sub_event_stream not in sub_event_stream
-                ):
-                    continue
-                data = self.extract_frame(frame=frame, keys=keys)
-                extracted_data.append(data)
-        finally:
-            i3file.close()
-
-        if construct_arrays:
-            return cols.construct_arrays(extracted_data, outdir=outdir)
-
-        return extracted_data
-
-    def extract_files(self, path, outdir, sub_event_stream=None, keys=None):
-        """Extract info from one or more i3 files
-
-        Parameters
-        ----------
-        path : str or iterable thereof
-        sub_event_stream : str or None, optional
-        outdir : str or None, optional
-        keys : str, iterable thereof, or None; optional
-
-        """
-        if isinstance(path, string_types):
-            path = [path]
-        paths = [expand(p) for p in sorted(path, key=nsort_key_func)]
-
-        for path_ in paths:
-            if outdir is not None:
-                fbase = basename(path_)
-                match = I3_FNAME_RE.match(fbase)
-                if match:
-                    fbase = match.groupdict()["basename"]
-                full_outdir = join(outdir, fbase)
-
-            self.extract_file(
-                path=path_,
-                sub_event_stream=sub_event_stream,
-                keys=keys,
-                outdir=full_outdir,
-            )
 
     def extract_frame(self, frame, keys=None):
         """Extract icetray frame objects to numpy typed objects
@@ -1518,6 +1422,7 @@ class ConvertI3ToNumpy(object):
             return func(obj, to_numpy=to_numpy)
 
         # New unhandled type found
+        print("WARNING: found new unhandled type: {}".format(obj_t))
         self.unhandled_types.add(obj_t)
 
         return None
