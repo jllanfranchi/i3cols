@@ -182,7 +182,9 @@ def main(description=__doc__):
 
     for subparser in all_sp:
         subparser.add_argument(
-            "-0", help="split stdin by null chars (e.g. find -print0 | thisprog)"
+            "-0",
+            action="store_true",
+            help="split stdin by null chars (e.g. find -print0 | thisprog)",
         )
         args = getargspec(subparser.get_default("func")).args
         path_argname = None
