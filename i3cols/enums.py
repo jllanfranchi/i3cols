@@ -460,6 +460,28 @@ class TriggerSubtypeID(enum.IntEnum):
     UNKNOWN_SUBTYPE = 250
 
 
+class I3WaveformSource(enum.IntEnum):
+    """dataclasses/public/dataclasses/physics/I3Waveform.h"""
+
+    ATWD = 0
+    FADC = 1
+    TWR_ELECTRICAL = 2
+    TWR_OPTICAL = 3
+    ETC = 4
+    SLC = 5
+
+
+class I3WaveformStatus(enum.IntEnum):
+    """dataclasses/public/dataclasses/physics/I3Waveform.h"""
+
+    VIRGINAL = 0
+    # NB: 1 is sometimes used as a flag by other modules.
+    COMBINED = 1 << 1
+    SATURATED = 1 << 2
+    UNDERSHOT = 1 << 3
+
+
+
 class ExtractionError(enum.IntEnum):
     """Error codes that can be set by retro/i3processing/extract_events.py"""
 
