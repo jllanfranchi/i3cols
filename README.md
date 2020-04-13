@@ -202,8 +202,8 @@ tau_regen_evt_indices, tau_decay_products = get_tau_info_nb(**arrays["I3MCTree"]
 
 ## See Also
 
-The **i3cols** project was developed independently but with of the [Awkward
-Array project](https://github.com/scikit-hep/awkward-1.0). It is an eventual
-goal that the extraction of arrays and other IceCube-specific things from this
-project can remain, while the backend storage and manipulation of arrays can be
-done using that project.
+The **i3cols** project was developed independently of but with the [Awkward
+Array project](https://github.com/scikit-hep/awkward-1.0) in mind. It is an
+eventual goal that the extraction of arrays and other IceCube-specific things
+from this project can remain, while the backend storage and manipulation of
+arrays can be done using that project.
