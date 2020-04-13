@@ -55,7 +55,7 @@ many common use-cases in Python/Numpy:
    affecting one another.
 
 
-### Flattening hierarchies
+### Flattening hierarchies for fast analysis without losing hierarchies
 
 1. Source i3 files are invisible to analysis, if you want (the fact that data
     came from hundreds of thousands of small i3 files does not slow down
@@ -79,9 +79,11 @@ pip install i3cols
 
 ### For developers
 
+Clone the repository and then perform an editable (`pip install -e`) installation:
+
 ```
 git clone git@github.com:jllanfranchi/i3cols.git
-pip install -e i3cols
+pip install -e ./i3cols
 ```
 
 ## Examples
@@ -97,8 +99,8 @@ single column per item :
 ```bash
 find /tmp/i3/genie/level7_v01.04/160000/ -name "oscNext*.i3*" | \
     sort -V | \
-    ~/src/i3cols/i3cols/cli.py extract_files_separately \
-        --keys I3EventHeader I3MCTree I3MCWeightDict I3GENIEResultDict \
+    i3cols extract_files_separately \
+        --keys I3EventHeader I3MCTree I3MCWeightDict \
         --index-and-concatenate \
         --category-xform subrun \
         --procs 20 \
@@ -107,13 +109,31 @@ find /tmp/i3/genie/level7_v01.04/160000/ -name "oscNext*.i3*" | \
         --compress
 ```
 
+If you completed the above and realize you also want the I3GENIEResultDict,
+then you can re-run the above but just specify that key. The process should be
+much faster:
+
+```bash
+find /tmp/i3/genie/level7_v01.04/160000/ -name "oscNext*.i3*" | \
+    sort -V | \
+    i3cols extract_files_separately \
+        --keys I3GENIEResultDict \
+        --index-and-concatenate \
+        --category-xform subrun \
+        --procs 20 \
+        --overwrite \
+        --outdir /tmp/columnar/genie/level7_v01.04/160000 \
+        --compress
+```
+
+
 Extract all keys from IC86.11 season. All subrun files for a given run are
 combined transparently into one and then all runs are combined in the end into
 monolithic columns, with a `run__category_index.npy` created in `outdir` that
 indexes the columns by run:
 
 ```bash
-~/src/i3cols/i3cols/cli.py extract_season \
+i3cols extract_season \
     /tmp/i3/data/level7_v01.04/IC86.11/ \
     --index-and-concatenate \
     --gcd /data/icecube/gcd/ \
