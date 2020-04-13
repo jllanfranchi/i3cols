@@ -44,11 +44,10 @@ __all__ = [
     "I3_OSCNEXT_FNAME_RE",
     "I3_MC_ONLY_KEYS",
     "get_i3_data_fname_info",
-    "i3_subrun_category_name_xform",
+    "i3_subrun_category_xform",
     "find_gcd_for_data_file",
-    "extract_files_individually",
+    "extract_files_separately",
     "extract_season",
-    "extract_run",
     "combine_runs",
     "run_icetray_converter",
     "ConvertI3ToNumpy",
@@ -63,14 +62,12 @@ try:
 except ImportError:
     from collections import Iterable, Sequence
 from copy import deepcopy
-from glob import glob
 from multiprocessing import Pool, cpu_count
 import os
 import re
 from shutil import rmtree
 import sys
 from tempfile import mkdtemp
-import time
 
 import numpy as np
 from six import string_types
@@ -89,8 +86,6 @@ except ImportError:
     OSCNEXTKEYS = []
 
 # TODO: communicate a "quit NOW!" message to worker threads
-# TODO: make `extract_run` use `extract_files_individually` then simply re-name
-#   the category index
 
 
 I3_FNAME_RE = re.compile(
@@ -108,7 +103,6 @@ I3_LEVEL_LEVELVER_RE = re.compile(
 I3_PASS_RE = re.compile("pass(?P<pass>[0-9][a-z]?)", flags=re.IGNORECASE)
 
 I3_RUN_RE = re.compile(r"Run(?P<run>[0-9]+)", flags=re.IGNORECASE)
-"""Matches MC "run" dirs, e.g. '140000' & data run dirs, e.g. 'Run00125177'"""
 
 I3_SUBRUN_RE = re.compile("subrun(?P<subrun>[0-9]+(_[0-9]+)?)", flags=re.IGNORECASE)
 
@@ -201,7 +195,7 @@ def get_i3_data_fname_info(path):
         I3_PART_RE,
         I3_SUBRUN_RE,
     ]:
-        match = regex.match(path)
+        match = regex.search(path)
         if match:
             info.update(match.groupdict())
 
@@ -213,18 +207,18 @@ def get_i3_data_fname_info(path):
     return info
 
 
-def i3_subrun_category_name_xform(path):
+def i3_subrun_category_xform(path):
     """Transform an i3 file's path into its subrun"""
     normbasename = os.path.basename(expand(path))
-    match = I3_SUBRUN_RE.match(normbasename)
+    match = I3_SUBRUN_RE.search(normbasename)
     if not match:
-        match = I3_OSCNEXT_FNAME_RE.match(normbasename)
+        match = I3_OSCNEXT_FNAME_RE.search(normbasename)
     if not match:
         raise ValueError(
             'path "{}" is incompatible with known I3 naming'
             " conventions or has no subrun specified".format(path)
         )
-    return np.uint32(match.groupdict()["subrun"].lstrip("0"))
+    return np.uint32(match.groupdict()["subrun"])
 
 
 def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
@@ -250,11 +244,13 @@ def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
     gcd_dir = expand(gcd_dir)
     assert os.path.isdir(gcd_dir)
 
-    match = I3_RUN_RE.match(os.path.basename(datafilename))
+    match = I3_RUN_RE.search(os.path.basename(datafilename))
     if match:
-        run = match.groupdict()["run"].lstrip("0")
+        groupdict = match.groupdict()
+        # NB: str(int(...)) strips leading 0's and gives "0" if run is all 0's
+        run = str(int(groupdict["run"]))
         run_gcd_re = re.compile(
-            r"run0*{}.*gcd.*\.i3.*".format(run), flags=re.IGNORECASE
+            r"run0*{}[^0-9].*gcd.*\.i3.*".format(run), flags=re.IGNORECASE
         )
         for dirpath, dirs, files in os.walk(gcd_dir, followlinks=True):
             if recurse:
@@ -263,7 +259,7 @@ def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
                 del dirs[:]
             files.sort(key=nsort_key_func)
             for filename in files:
-                if run_gcd_re.match(filename):
+                if run_gcd_re.search(filename):
                     return os.path.join(dirpath, filename)
 
     raise IOError(
@@ -273,12 +269,12 @@ def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
     )
 
 
-def extract_files_individually(
+def extract_files_separately(
     paths,
     outdir,
     index_and_concatenate,
     index_name="sourcefile",
-    category_name_xform=None,
+    category_xform=None,
     gcd=None,
     sub_event_stream=None,
     keys=None,
@@ -288,38 +284,48 @@ def extract_files_individually(
     keep_tempfiles_on_fail=False,
     procs=None,
 ):
-    """Exctract i3 files "individually" (if specified, an appropriate GCD file
-    will also be read before a given i3 data file -- e.g., if pulses are to be
-    extracted) into i3cols (directories + numpy) format in `outdir`.
+    """Exctract i3 files separately (if `gcd` is specified, an appropriate GCD
+    file will also be read before each given i3 data file -- e.g., if pulses
+    are to be extracted) into i3cols (directories + numpy) format in `outdir`.
+
 
     Parameters
     ----------
     paths : str or iterable thereof
+        Paths to i3 files to be extracted; note the order of files provided is
+        the order they are extracted. Use e.g. `i3cols.utils.nsort_key_func`
+        from Python or `ls -v`, `sort -V`, etc. from the command line to
+        achieve sensible sorting
+
     outdir : str
         Resulting i3cols column directories (or .npz files if `compress` is
         True) are placed in `outdir` if `index_and_concatenate` is True or
         within subdirectories inside of `outdir` if `index_and_concatenate` is
-        False.
+        False
+
     index_and_concatenate : bool
         Whether to concatenate the columns extracted from each individual i3
         file. If so, a category index is created for the concatenated columns
         to indicate which values came from which file (see `index_name` and
-        `category_name_xform` args)
+        `category_xform` args)
+
     index_name : str, optional
         By default, category index (if `index_and_concatenate` is True) is named
         "sourcefile" (so the full filename is "sourcefile__category_index.npy")
         due to the default for catgory naming convention (see
-        `category_name_xform`)
-    category_name_xform : callable or None, optional
+        `category_xform`)
+
+    category_xform : callable or None, optional
         Create a name for the categories in a category index (if
         `index_and_concatenate` is True) or the name of the subdirectories
         created within `outdir` (if `index_and_concatenate` is False). Called
-        via `category_name_xform(full_path)`, i.e. with the
+        via `category_xform(full_path)`, i.e. with the
         user/variable-expanded absolute path (but not with symlinks resolved)
         of each file which has events extracted from it. If None is specified
         (the default), categories are named by the the uncommon trailing parts
         of each source i3 file's path (with i3 & compression extensions
         removed).
+
     gcd : str, iterable thereof, or None; optional
         If `gcd` is None, no GCD file is read prior to extracting each file in
         `paths`. If `gcd` is a path to a single GCD file, this file is read in
@@ -327,33 +333,41 @@ def extract_files_individually(
         path); extract(gcd, path); etc. If `gcd` is a path to a directory, the
         directory is searched for a GCD file matching a "Run" specification in
         the source filename.
+
     sub_event_stream : str, iterable thereof, or None; optional
         Only extract frames with the specified sub event streams; if None,
         extract all sub event streams.
+
     keys : str, iterable thereof, or None; optional
         Only extract at most the keys specified here (if some or all are
         missing for a frame, they are simply ignored). If None is provided,
         extract all keys that are possible to extract with `ConvertI3ToNumpy`.
+
     overwrite : bool, optional
         Currently this has to be True, but in the future `overwrite=False`
         logic should be worked out to error out before much/any extraction
         occurs to avoid overwriting files and performing redundant extractions
+
     compress : bool, optional
         After the extraction is complete, compress the column directories into
         `.npz` files (and remove the original directories)?
+
     tempdir : str, optional
         If `index_and_concatenate` is True, the individually extracted arrays
         are placed in a sub-directory within `tempdir` before
         indexing/concatenating and placing the final results in `outdir`.
         `tempdir` is unused if `index_and_concatenate` is False.
+
     keep_tempfiles_on_fail : bool, optional
         If `index_and_concatenate` is True and an error occurs, tempfiles that
         are created within `tempdir` will be kept. (Otherwise, these are
         automatically deleted, if at all possible.)
+
     procs : None or int >= 1, optional
         Number of processes to use for extracting files in parallel. If None
         specified, defaults to `multiprocessing.cpu_count()` (i.e., takes over
         an entire system!)
+
 
     Notes
     -----
@@ -389,11 +403,12 @@ def extract_files_individually(
         2. Written to subdirectories within `outdir` named after the source
             file's basename (with ".i3*" extension(s) removed)
 
+
     See also
     --------
+    extract_files_as_one
     run_icetray_converter
     extract_season
-    extract_run
 
     """
     if not overwrite:
@@ -442,10 +457,18 @@ def extract_files_individually(
     if len(set(simplified_paths)) < len(simplified_paths):
         raise ValueError("Duplicated paths detected: {}".format(paths))
 
-    if category_name_xform is None:
-        category_names = simplified_paths
+    if category_xform is None:
+        categories = simplified_paths
     else:
-        category_names = [category_name_xform(full_path) for full_path in full_paths]
+        categories = [category_xform(full_path) for full_path in full_paths]
+
+    num_unique_categories = len(set(categories))
+    if num_unique_categories != len(categories):
+        raise ValueError(
+            "Duplicated categories detected: {}".format(
+                list(zip(paths, categories))
+            )
+        )
 
     gcd_is_dir = False
     if gcd is not None:
@@ -483,36 +506,37 @@ def extract_files_individually(
 
         print("Keys remaining to extract:", keys)
 
-    full_tempdir = None
+    procs = min(procs, len(full_paths))
+
+    my_tempdir = None
     paths_to_compress = []
     results = []
     category_array_map = OrderedDict()
+
     pool = None
     if procs > 1:
-        pool = Pool(min(procs, len(full_paths)))
+        pool = Pool(procs)
     try:
         if index_and_concatenate:
             if tempdir is not None:
                 mkdir(tempdir)
-            full_tempdir = mkdtemp(dir=tempdir)
+            my_tempdir = mkdtemp(dir=tempdir)
 
-        for full_path, category_name in zip(full_paths, category_names):
-            if isinstance(category_name, string_types):
-                category_name_dirname = category_name
-            elif isinstance(category_name, Iterable):
-                category_name_dirname = os.path.join(*[str(x) for x in category_name])
+        for full_path, category in zip(full_paths, categories):
+            if isinstance(category, string_types):
+                category_dirname = category
+            elif isinstance(category, Iterable):
+                category_dirname = os.path.join(*[str(x) for x in category])
             else:
-                category_name_dirname = index_name + str(category_name)
-
-            print("category_name_dirname", category_name_dirname)
+                category_dirname = index_name + str(category)
 
             if index_and_concatenate:
-                thisfile_outdir = os.path.join(full_tempdir, category_name_dirname)
-                category_array_map[category_name] = thisfile_outdir
+                category_outdir = os.path.join(my_tempdir, category_dirname)
+                category_array_map[category] = category_outdir
             else:
-                thisfile_outdir = os.path.join(outdir, category_name_dirname)
+                category_outdir = os.path.join(outdir, category_dirname)
                 if compress:
-                    paths_to_compress.append(thisfile_outdir)
+                    paths_to_compress.append(category_outdir)
 
             if gcd is None:
                 extract_paths = [full_path]
@@ -524,17 +548,16 @@ def extract_files_individually(
                     )
                 extract_paths = [gcd_file, full_path]
 
-            kwargs = dict(
+            kw = dict(
                 paths=extract_paths,
-                outdir=thisfile_outdir,
+                outdir=category_outdir,
                 sub_event_stream=sub_event_stream,
                 keys=keys,
             )
-
             if procs == 1:
-                run_icetray_converter(**kwargs)
+                run_icetray_converter(**kw)
             else:
-                results.append(pool.apply_async(run_icetray_converter, tuple(), kwargs))
+                results.append(pool.apply_async(run_icetray_converter, tuple(), kw))
 
         if pool is not None:
             pool.close()
@@ -544,10 +567,8 @@ def extract_files_individually(
             result.get()
 
         if index_and_concatenate:
-            for category_name, thisfile_outdir in list(category_array_map.items()):
-                category_array_map[category_name], _ = cols.find_array_paths(
-                    thisfile_outdir
-                )
+            for category, category_outdir in list(category_array_map.items()):
+                category_array_map[category], _ = cols.find_array_paths(category_outdir)
             cols.index_and_concatenate_arrays(
                 category_array_map=category_array_map,
                 index_name=index_name,
@@ -557,23 +578,23 @@ def extract_files_individually(
                 paths_to_compress = outdir
 
     except:
-        if full_tempdir is not None:
+        if my_tempdir is not None and os.path.isdir(my_tempdir):
             if keep_tempfiles_on_fail:
                 print(
                     'Temp dir/files will NOT be removed; see "{}" to inspect'
-                    " and manually remove".format(full_tempdir)
+                    " and manually remove".format(my_tempdir)
                 )
             else:
                 try:
-                    rmtree(full_tempdir)
+                    rmtree(my_tempdir)
                 except Exception as err:
                     print(err)
         raise
 
     else:
-        if full_tempdir is not None:
+        if my_tempdir is not None and os.path.isdir(my_tempdir):
             try:
-                rmtree(full_tempdir)
+                rmtree(my_tempdir)
             except Exception as err:
                 print(err)
 
@@ -593,16 +614,158 @@ def extract_files_individually(
         cols.compress(paths=paths_to_compress, recurse=True, keep=False, procs=procs)
 
 
+def extract_files_as_one(
+    paths,
+    outdir,
+    gcd=None,
+    sub_event_stream=None,
+    keys=None,
+    overwrite=True,
+    compress=False,
+    procs=None,
+):
+    """Exctract i3 files as if they are one. All information about file
+    boundaries is lost (unless this is already encoded in the data being
+    extracted, e.g. if I3EventHeader's Run or SubRun corresponds to the files).
+
+
+    Parameters
+    ----------
+    paths : str or iterable thereof
+
+    outdir : str
+        Resulting i3cols column directories (or .npz files if `compress` is
+        True) are placed in this directory (it is created, including any parent
+        directories, if it does not already exist)
+
+    gcd : str, iterable thereof, or None; optional
+        If `gcd` is None, no GCD file is read prior to extracting each file in
+        `paths`. If `gcd` is a path to a single GCD file, this file is read in
+        before each file in `paths` is extracted; in pseudo-code: extract(gcd,
+        path); extract(gcd, path); etc. If `gcd` is a path to a directory, the
+        directory is searched for a GCD file matching a "Run" specification in
+        the source filename.
+
+    sub_event_stream : str, iterable thereof, or None; optional
+        Only extract frames with the specified sub event streams; if None,
+        extract all sub event streams.
+
+    keys : str, iterable thereof, or None; optional
+        Only extract at most the keys specified here (if some or all are
+        missing for a frame, they are simply ignored). If None is provided,
+        extract all keys that are possible to extract with `ConvertI3ToNumpy`.
+
+    overwrite : bool, optional
+        Currently this has to be True, but in the future `overwrite=False`
+        logic should be worked out to error out before much/any extraction
+        occurs to avoid overwriting files and performing redundant extractions
+
+    compress : bool, optional
+        After the extraction is complete, compress the column directories into
+        `.npz` files (and remove the original directories)?
+
+    procs : int or None, optional
+        Only used by the `i3cols.cols.compress` (if `compress` is True), as the
+        extraction of multiple files as one cannot currently run in parallel.
+
+
+    Notes
+    -----
+    It is recommended to use this function if both of the following are true:
+
+        * It is not necessary to know from which file extracted events came after
+            being extracted
+
+        * The i3 files are "small": I.e., the time to extract a single i3 file
+            is similar to or less than the time to execute the
+            `run_icetray_converter` function (this instantiates
+            ConvertI3ToNumpy and creates an icetray to process the (gcd+) i3
+            data file
+
+    If one  of the above does not hold, it is recommended to call
+    `extract_files_separately`.
+
+
+    See also
+    --------
+    extract_files_separately
+    run_icetray_converter
+    extract_season
+
+    """
+    if not overwrite:
+        raise NotImplementedError("For now, you MUST set `overwrite` to True")
+
+    if isinstance(paths, string_types):
+        paths = [paths]
+    paths = [expand(p) for p in paths]
+
+    if gcd is not None:
+        gcd = expand(gcd)
+        if os.path.isdir(gcd):
+            # Find GCD file required for each data file, but only add to
+            # `new_paths` when the GCD _changes_, thereby minimizing the number
+            # of GCD files that need to be read during the extraction process
+            previous_gcd_file_path = None
+            new_paths = []
+            for path in paths:
+                gcd_file_path = find_gcd_for_data_file(path, gcd)
+                if gcd_file_path != previous_gcd_file_path:
+                    new_paths.append(gcd_file_path)
+                    previous_gcd_file_path = gcd_file_path
+                new_paths.append(path)
+            paths = new_paths
+        else:
+            assert os.path.isfile(gcd)
+            paths = paths.insert(0, gcd)
+
+    if isinstance(sub_event_stream, string_types):
+        sub_event_stream = [sub_event_stream]
+
+    if isinstance(keys, string_types):
+        keys = [keys]
+
+    if keys is None:
+        print("Extracting all keys in all files")
+    else:
+        if not overwrite:
+            existing_arrays, _ = cols.find_array_paths(outdir, keys=keys)
+            existing_keys = set(existing_arrays.keys())
+            redundant_keys = existing_keys.intersection(keys)
+            if redundant_keys:
+                print("Will not extract existing keys:", sorted(redundant_keys))
+                keys = [k for k in keys if k not in redundant_keys]
+
+        if len(keys) == 0:
+            print("No keys to extract!")
+            return
+
+        print("Keys remaining to extract:", keys)
+
+    run_icetray_converter(
+        paths=paths, sub_event_stream=sub_event_stream, keys=keys, outdir=outdir
+    )
+
+    if compress:
+        # TODO: keys weren't created by this function are also compressed by
+        # using `recurse`, but we don't know what kesy were generated except in
+        # particular cases. Do we care that this could compress files it didn't
+        # create?
+        cols.compress(paths=outdir, recurse=True, keep=False, procs=procs)
+
+
 def extract_season(
     path,
-    outdir=None,
-    tempdir=None,
+    outdir,
+    index_and_concatenate,
     gcd=None,
+    sub_event_stream=None,
     keys=None,
     overwrite=False,
-    mmap=True,
+    compress=False,
+    tempdir=None,
     keep_tempfiles_on_fail=False,
-    procs=cpu_count(),
+    procs=None,
 ):
     """E.g. .. ::
 
@@ -611,14 +774,29 @@ def extract_season(
     Parameters
     ----------
     path : str
+        Path to the directory containing the season's run directories (and
+        those should contain the run's subrun .i3 files)
+
     outdir : str
-    tempdir : str or None, optional
-        Intermediate arrays will be written to this directory.
+        Write extracted info to this dir. Column directories (or .npz files)
+        are either written to "{outdir}/run{run}/" for each run if
+        `index_and_concatenate` is False, or directly to "{outdir}/"  if
+        `index_and_concatenate` is True. In the latter case,
+        "{outdir}/run__category_index.npy" is written out as well.
+
+    index_and_concatenate : bool
+        Concatenate all the season's runs together into large columns and
+        create a "run__category_index.npy" array to indicate which data in the
+        large columns belongs to which run.
+
     gcd : str or None, optional
     keys : str, iterable thereof, or None; optional
     overwrite : bool, optional
-    mmap : bool, optional
+    compress : bool, optional
+    tempdir : str or None, optional
+        Intermediate arrays will be written to this directory.
     keep_tempfiles_on_fail : bool, optional
+    procs : int or None, optional
 
     """
     path = expand(path)
@@ -627,301 +805,161 @@ def extract_season(
     outdir = expand(outdir)
     if tempdir is not None:
         tempdir = expand(tempdir)
-
-    pool = None
-    try:
-        if tempdir is not None:
-            mkdir(tempdir)
-        full_tempdir = mkdtemp(dir=tempdir)
-
-        if gcd is None:
-            gcd = path
-        assert isinstance(gcd, string_types)
-        gcd = expand(gcd)
-        assert os.path.isdir(gcd)
-
-        if isinstance(keys, string_types):
-            keys = [keys]
-
-        match = IC_SEASON_DIR_RE.match(os.path.basename(path))
-        assert match, 'path not a season directory? "{}"'.format(os.path.basename(path))
-        groupdict = match.groupdict()
-
-        year_str = groupdict["year"]
-        assert year_str is not None
-
-        print("outdir:", outdir)
-        print("full_tempdir:", full_tempdir)
-
-        if keys is None:
-            print("extracting all keys in all files")
-        else:
-            if not overwrite:
-                existing_arrays, _ = cols.find_array_paths(outdir)
-                existing_keys = set(existing_arrays.keys())
-                redundant_keys = existing_keys.intersection(keys)
-                if redundant_keys:
-                    print("will not extract existing keys:", sorted(redundant_keys))
-                    keys = [k for k in keys if k not in redundant_keys]
-            invalid_keys = I3_MC_ONLY_KEYS.intersection(keys)
-            if invalid_keys:
-                print(
-                    "MC-only keys {} were specified but this is data, so these"
-                    " will be skipped.".format(sorted(invalid_keys))
-                )
-            keys = [k for k in keys if k not in I3_MC_ONLY_KEYS]
-            print("keys remaining to extract:", keys)
-
-            if len(keys) == 0:
-                print("nothing to do!")
-                return
-
-        run_dirpaths = []
-        for basepath in sorted(os.listdir(path), key=nsort_key_func):
-            match = I3_RUN_DIR_RE.match(basepath)
-            if not match:
-                continue
-            groupdict = match.groupdict()
-            run_int = np.uint32(groupdict["run"])
-            run_dirpaths.append((run_int, os.path.join(path, basepath)))
-        # Ensure sorting by run
-        run_dirpaths.sort()
-
-        t0 = time.time()
-
-        run_tempdirs = []
-
-        if procs > 1:
-            pool = Pool(procs)
-        for run, run_dirpath in run_dirpaths:
-            run_tempdir = os.path.join(full_tempdir, "Run{}".format(run))
-            mkdir(run_tempdir)
-            run_tempdirs.append(run_tempdir)
-
-            kw = dict(
-                path=run_dirpath,
-                outdir=run_tempdir,
-                gcd=gcd,
-                keys=keys,
-                overwrite=True,
-                mmap=mmap,
-                keep_tempfiles_on_fail=keep_tempfiles_on_fail,
-                procs=procs,
-            )
-            if procs == 1:
-                extract_run(**kw)
-            else:
-                pool.apply_async(extract_run, tuple(), kw)
-        if procs > 1:
-            pool.close()
-            pool.join()
-
-        combine_runs(path=full_tempdir, outdir=outdir, keys=keys, mmap=mmap)
-
-    except:
-        if not keep_tempfiles_on_fail:
-            try:
-                rmtree(full_tempdir)
-            except Exception as err:
-                print(err)
-        raise
-
-    else:
-        try:
-            rmtree(full_tempdir)
-        except Exception as err:
-            print(err)
-
-    finally:
-        if pool is not None:
-            try:
-                pool.close()
-                pool.join()
-            except Exception as err:
-                print(err)
-
-    print(
-        '{} s to extract season path "{}" to "{}"'.format(
-            time.time() - t0, path, outdir
-        )
-    )
-
-
-def extract_run(
-    path,
-    outdir=None,
-    tempdir=None,
-    gcd=None,
-    sub_event_stream=None,
-    keys=None,
-    overwrite=False,
-    mmap=True,
-    keep_tempfiles_on_fail=False,
-    procs=cpu_count(),
-):
-    """E.g. .. ::
-
-        data/level7_v01.04/IC86.14/Run00125177
-        genie/level7_v01.04/140000
-
-    Note that what can be considered "subruns" for both data and MC are
-    represented as files in both, at least for this version of oscNext.
-
-    Parameters
-    ----------
-    path : str
-    outdir : str
-    tempdir : str or None, optional
-        Intermediate arrays will be written to this directory.
-    gcd : str or None, optional
-    sub_event_stream : str, sequence thereof, or None; optional
-    keys : str, iterable thereof, or None; optional
-    overwrite : bool, optional
-    mmap : bool, optional
-    keep_tempfiles_on_fail : bool, optional
-
-    """
-    path = expand(path)
-    assert os.path.isdir(path), path
-
-    outdir = expand(outdir)
-    if tempdir is not None:
-        tempdir = expand(tempdir)
-
-    if isinstance(sub_event_stream, string_types):
-        sub_event_stream = [sub_event_stream]
 
     if isinstance(keys, string_types):
         keys = [keys]
 
+    if procs is None:
+        procs = cpu_count()
+
+    # match = IC_SEASON_DIR_RE.search(os.path.basename(path))
+    # assert match, 'Path not a season directory? "{}"'.format(os.path.basename(path))
+
+    if keys is None:
+        print("Extracting all keys in all files")
+    else:
+        if not overwrite:
+            existing_arrays, _ = cols.find_array_paths(outdir)
+            existing_keys = set(existing_arrays.keys())
+            redundant_keys = existing_keys.intersection(keys)
+            if redundant_keys:
+                print("will not extract existing keys:", sorted(redundant_keys))
+                keys = [k for k in keys if k not in redundant_keys]
+
+        invalid_keys = I3_MC_ONLY_KEYS.intersection(keys)
+        if invalid_keys:
+            print(
+                "MC-only keys {} were specified but this is data, so these"
+                " will be skipped.".format(sorted(invalid_keys))
+            )
+        keys = [k for k in keys if k not in I3_MC_ONLY_KEYS]
+        print("keys remaining to extract:", keys)
+
+        if len(keys) == 0:
+            print("nothing to do!")
+            return
+
+    run_dirpaths = []
+    for basepath in sorted(os.listdir(path), key=nsort_key_func):
+        match = I3_RUN_DIR_RE.search(basepath)
+        if not match:
+            continue
+        groupdict = match.groupdict()
+        run_int = np.uint32(int(groupdict["run"]))
+        run_dirpaths.append((run_int, os.path.join(path, basepath)))
+    # Sort ascending by numeric run number
+    run_dirpaths.sort()
+
+    procs = min(procs, len(run_dirpaths))
+
+    index_name = "run"
+
+    my_tempdir = None
+    paths_to_compress = []
+    results = []
+    category_array_map = OrderedDict()
+
     pool = None
-    mkdir(outdir)
+    if procs > 1:
+        pool = Pool(procs)
     try:
         if tempdir is not None:
             mkdir(tempdir)
-        full_tempdir = mkdtemp(dir=tempdir)
+        my_tempdir = mkdtemp(dir=tempdir)
 
-        match = I3_RUN_DIR_RE.match(os.path.basename(path))
-        assert match, 'path not a run directory? "{}"'.format(os.path.basename(path))
-        groupdict = match.groupdict()
+        for run, run_dirpath in run_dirpaths:
+            category = run
 
-        is_data = groupdict["pfx"] is not None
-        is_mc = not is_data
-        run_str = groupdict["run"]
-        run_int = int(groupdict["run"].lstrip("0"))
+            # Find and organize subrun i3 files within the run directory
 
-        if is_mc:
-            print("is_mc")
-            assert isinstance(gcd, string_types) and os.path.isfile(expand(gcd)), str(
-                gcd
-            )
-            gcd = expand(gcd)
-        else:
-            print("is_data")
-            if gcd is None:
-                gcd = path
-            assert isinstance(gcd, string_types)
-            gcd = expand(gcd)
-            if not os.path.isfile(gcd):
-                assert os.path.isdir(gcd)
-                # TODO: use DATA_GCD_FNAME_RE
-                gcd = glob(os.path.join(gcd, "*Run{}*GCD*.i3*".format(run_str)))
-                assert len(gcd) == 1, gcd
-                gcd = expand(gcd[0])
-
-        if keys is None:
-            print("extracting all keys in all files")
-        else:
-            if not overwrite:
-                existing_arrays, _ = cols.find_array_paths(outdir, keys=keys)
-                existing_keys = set(existing_arrays.keys())
-                redundant_keys = existing_keys.intersection(keys)
-                if redundant_keys:
-                    print("will not extract existing keys:", sorted(redundant_keys))
-                    keys = [k for k in keys if k not in redundant_keys]
-            if is_data:
-                invalid_keys = I3_MC_ONLY_KEYS.intersection(keys)
-                if invalid_keys:
-                    print(
-                        "MC-only keys {} were specified but this is data, so these"
-                        " will be skipped.".format(sorted(invalid_keys))
+            subrun_paths = []
+            for filename in os.listdir(run_dirpath):
+                path = os.path.join(run_dirpath, filename)
+                if not os.path.isfile(path):
+                    continue
+                match = I3_OSCNEXT_FNAME_RE.match(os.path.basename(path))
+                if match:
+                    groupdict = match.groupdict()
+                    filename_run = np.uint32(int(groupdict["run"]))
+                    if filename_run != run:
+                        raise ValueError(
+                            "run in file={} != run dir run={}".format(filename_run, run)
+                        )
+                    subrun = np.uint32(int(groupdict["subrun"]))
+                    subrun_paths.append((subrun, path))
+            all_subruns = [sr_p[0] for sr_p in subrun_paths]
+            if len(set(all_subruns)) != len(subrun_paths):
+                raise ValueError(
+                    "Duplicate subruns found, will result in ambiguity. {}".format(
+                        list(zip(subrun_paths, all_subruns))
                     )
-                keys = [k for k in keys if k not in I3_MC_ONLY_KEYS]
-
-            print("keys remaining to extract:", keys)
-
-            if len(keys) == 0:
-                print("nothing to do!")
-                return
-
-        subrun_filepaths = []
-        for basepath in sorted(os.listdir(path), key=nsort_key_func):
-            match = I3_OSCNEXT_FNAME_RE.match(basepath)
-            if not match:
-                continue
-            groupdict = match.groupdict()
-            assert int(groupdict["run"]) == run_int
-            subrun_int = int(groupdict["subrun"])
-            subrun_filepaths.append((subrun_int, os.path.join(path, basepath)))
-        # Ensure sorting by subrun
-        subrun_filepaths.sort()
-
-        t0 = time.time()
-        if is_mc:
-            arrays = OrderedDict()
-            requests = OrderedDict()
-
-            subrun_tempdirs = []
-            if procs > 1:
-                pool = Pool(procs)
-
-            for subrun, fpath in subrun_filepaths:
-                print(fpath)
-                paths = [gcd, fpath]
-
-                subrun_tempdir = os.path.join(full_tempdir, "subrun{}".format(subrun))
-                mkdir(subrun_tempdir)
-                subrun_tempdirs.append(subrun_tempdir)
-
-                kw = dict(
-                    paths=paths,
-                    sub_event_stream=sub_event_stream,
-                    keys=keys,
-                    outdir=subrun_tempdir,
                 )
-                if procs == 1:
-                    arrays[subrun] = run_icetray_converter(**kw)
-                else:
-                    requests[subrun] = pool.apply_async(
-                        run_icetray_converter, tuple(), kw
-                    )
-            if procs > 1:
-                for key, result in requests.items():
-                    arrays[key] = result.get()
+            # Sort ascending by numeric subrun number; just keep path
+            subrun_paths = [sr_p[1] for sr_p in sorted(subrun_paths)]
 
+            category_dirname = index_name + str(category)
+
+            if index_and_concatenate:
+                category_outdir = os.path.join(my_tempdir, category_dirname)
+                category_array_map[category] = category_outdir
+            else:
+                category_outdir = os.path.join(outdir, category_dirname)
+                if compress:
+                    paths_to_compress.append(category_outdir)
+
+            kw = dict(
+                paths=subrun_paths,
+                outdir=category_outdir,
+                gcd=gcd,
+                sub_event_stream=sub_event_stream,
+                keys=keys,
+                overwrite=True if index_and_concatenate else overwrite,
+                compress=False,
+                procs=procs,
+            )
+            if procs == 1:
+                extract_files_as_one(**kw)
+            else:
+                results.append(pool.apply_async(extract_files_as_one, tuple(), kw))
+
+        if pool is not None:
+            pool.close()
+            pool.join()
+
+        for result in results:
+            result.get()
+
+        if index_and_concatenate:
+            for category, category_outdir in list(category_array_map.items()):
+                category_array_map[category], _ = cols.find_array_paths(category_outdir)
             cols.index_and_concatenate_arrays(
-                arrays, index_name="subrun", outdir=outdir, mmap=mmap,
+                category_array_map=category_array_map,
+                index_name=index_name,
+                outdir=outdir,
             )
+            if compress:
+                paths_to_compress = outdir
 
-        else:  # is_data
-            paths = [gcd] + [fpath for _, fpath in subrun_filepaths]
-            run_icetray_converter(
-                paths=paths, sub_event_stream=sub_event_stream, keys=keys, outdir=outdir
-            )
-
-    except Exception:
-        if not keep_tempfiles_on_fail:
-            try:
-                rmtree(full_tempdir)
-            except Exception as err:
-                print(err)
+    except:
+        if my_tempdir is not None and os.path.isdir(my_tempdir):
+            if keep_tempfiles_on_fail:
+                print(
+                    'Temp dir/files will NOT be removed; see "{}" to inspect'
+                    " and manually remove".format(my_tempdir)
+                )
+            else:
+                try:
+                    rmtree(my_tempdir)
+                except Exception as err:
+                    print(err)
         raise
 
     else:
-        try:
-            rmtree(full_tempdir)
-        except Exception as err:
-            print(err)
+        if my_tempdir is not None and os.path.isdir(my_tempdir):
+            try:
+                rmtree(my_tempdir)
+            except Exception as err:
+                print(err)
 
     finally:
         if pool is not None:
@@ -931,9 +969,12 @@ def extract_run(
             except Exception as err:
                 print(err)
 
-    print(
-        '{} s to extract run path "{}" to "{}"'.format(time.time() - t0, path, outdir)
-    )
+    if compress:
+        # TODO: keys weren't created by this function are also compressed by
+        # using `recurse`, but we don't know what kesy were generated except in
+        # particular cases. Do we care that this could compress files it didn't
+        # create?
+        cols.compress(paths=paths_to_compress, recurse=True, keep=False, procs=procs)
 
 
 def combine_runs(path, outdir, keys=None, mmap=True):
@@ -965,12 +1006,12 @@ def combine_runs(path, outdir, keys=None, mmap=True):
         subpath = os.path.join(path, subname)
         if not os.path.isdir(subpath):
             continue
-        match = I3_RUN_DIR_RE.match(subname)
+        match = I3_RUN_DIR_RE.search(subname)
         if not match:
             continue
         groupdict = match.groupdict()
         run_str = groupdict["run"]
-        run_int = int(run_str.lstrip("0"))
+        run_int = np.uint32(int(run_str))
         run_dirs.append((run_int, subpath))
     # Ensure sorting by numerical run number
     run_dirs.sort()

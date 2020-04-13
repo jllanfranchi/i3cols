@@ -41,7 +41,7 @@ import sys
 import numpy as np
 from six import string_types
 
-from i3cols import cols, extract, phys
+from i3cols import cols, extract, phys, utils
 
 
 def main(description=__doc__):
@@ -53,16 +53,16 @@ def main(description=__doc__):
 
     all_sp = []
 
-    # Extracting files individually has unique kwargs
+    # Extract files individually has unique kwargs
 
-    subparser = subparsers.add_parser("extract_files_individually")
+    subparser = subparsers.add_parser("extract_files_separately")
     all_sp.append(subparser)
-    subparser.set_defaults(func=extract.extract_files_individually)
+    subparser.set_defaults(func=extract.extract_files_separately)
     subparser.add_argument("--outdir", required=True)
     subparser.add_argument("--index-and-concatenate", action="store_true")
     subparser.add_argument("--index-name", default="sourcefile")
     subparser.add_argument(
-        "--category-name-xform", default=None, choices=["subrun"],
+        "--category-xform", default=None, choices=["subrun"],
     )
     subparser.add_argument("--gcd", default=None)
     subparser.add_argument("--sub-event-stream", nargs="+", default=None)
@@ -73,38 +73,36 @@ def main(description=__doc__):
     subparser.add_argument("--keep-tempfiles-on-fail", action="store_true")
     subparser.add_argument("--procs", type=int, default=cpu_count())
 
-    # Extract season and run have similar arguments; can use generic `extract`
-    # for these, too
+    # Extract i3 files as if they are one large i3 file (interspersing GCD
+    # files if specified and as appropriate)
 
-    parser_extract_season = subparsers.add_parser("extract_season")
-    all_sp.append(parser_extract_season)
-    parser_extract_season.set_defaults(func=extract.extract_season)
+    subparser = subparsers.add_parser("extract_files_as_one")
+    all_sp.append(subparser)
+    subparser.set_defaults(func=extract.extract_files_as_one)
+    subparser.add_argument("--outdir", required=True)
+    subparser.add_argument("--gcd", default=None)
+    subparser.add_argument("--sub-event-stream", nargs="+", default=None)
+    subparser.add_argument("--keys", nargs="+", default=None)
+    subparser.add_argument("--overwrite", action="store_true")
+    subparser.add_argument("--compress", action="store_true")
+    subparser.add_argument("--procs", type=int, default=cpu_count())
 
-    parser_extract_run = subparsers.add_parser("extract_run")
-    all_sp.append(parser_extract_run)
-    parser_extract_run.set_defaults(func=extract.extract_run)
+    # Extract i3 data season files (look for "Run" directories, and "subrun"
+    # .i3 files within each run directory).
 
-    for subparser in [parser_extract_season, parser_extract_run]:
-        subparser.add_argument("--gcd", default=None)
-        subparser.add_argument("--outdir", required=True)
-        subparser.add_argument("--tempdir", default="/tmp")
-        subparser.add_argument("--overwrite", action="store_true")
-        subparser.add_argument("--no-mmap", action="store_true")
-        subparser.add_argument("--keep-tempfiles-on-fail", action="store_true")
-        subparser.add_argument("--procs", type=int, default=cpu_count())
-
-    parser_extract_run.add_argument(
-        "--keys", nargs="+", default=None
-    )  # extract.DFLT_KEYS)
-    parser_extract_season.add_argument(
-        "--sub-event-stream", nargs="+", default=None,
-    )
-    parser_extract_season.add_argument(
-        "--keys",
-        nargs="+",
-        default=None,
-        # default=[k for k in extract.DFLT_KEYS if k not in extract.MC_ONLY_KEYS],
-    )
+    subparser = subparsers.add_parser("extract_season")
+    all_sp.append(subparser)
+    subparser.set_defaults(func=extract.extract_season)
+    subparser.add_argument("--outdir", required=True)
+    subparser.add_argument("--index-and-concatenate", action="store_true")
+    subparser.add_argument("--gcd", default=None)
+    subparser.add_argument("--sub-event-stream", nargs="+", default=None)
+    subparser.add_argument("--keys", nargs="+", default=None)
+    subparser.add_argument("--overwrite", action="store_true")
+    subparser.add_argument("--compress", action="store_true")
+    subparser.add_argument("--tempdir", default=None)
+    subparser.add_argument("--keep-tempfiles-on-fail", action="store_true")
+    subparser.add_argument("--procs", type=int, default=cpu_count())
 
     # Combine runs is unique
 
@@ -196,6 +194,7 @@ def main(description=__doc__):
         path_argname = None
         if "paths" in args:
             subparser.add_argument("paths", nargs="*", default=sys.stdin)
+            subparser.add_argument("sort", action="store_true")
         elif "path" in args:
             subparser.add_argument("path", nargs="*", default=sys.stdin)
 
@@ -215,20 +214,20 @@ def main(description=__doc__):
     if "no_mmap" in kwargs:
         kwargs["mmap"] = not kwargs.pop("no_mmap")
 
-    category_name_xform = kwargs.pop("category_name_xform", None)
-    if category_name_xform is not None:
-        if category_name_xform == "subrun":
-            category_name_xform = extract.i3_subrun_category_name_xform
+    category_xform = kwargs.pop("category_xform", None)
+    if category_xform is not None:
+        if category_xform == "subrun":
+            category_xform = extract.i3_subrun_category_xform
             index_name = kwargs.pop("index_name", None)
             if index_name is not None and index_name != "subrun":
                 print(
                     "WARNING: renaming `index_name` to 'subrun' in"
-                    " accordance with `category_name_xform`"
+                    " accordance with `category_xform`"
                 )
             kwargs["index_name"] = "subrun"
         else:
-            raise ValueError(category_name_xform)
-        kwargs["category_name_xform"] = category_name_xform
+            raise ValueError(category_xform)
+        kwargs["category_xform"] = category_xform
 
     # Run appropriate function
 
@@ -259,6 +258,10 @@ def main(description=__doc__):
 
         kwargs[path_argname] = path
         break
+
+    if "paths" in kwargs and "sort" in kwargs:
+        if kwargs.pop("sort"):
+            kwargs["paths"] = sorted(kwargs["paths"], key=utils.nsort_key_func)
 
     func(**kwargs)
 
