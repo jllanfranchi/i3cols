@@ -93,8 +93,8 @@ pip install -e ./i3cols
 All command-line examples assume you are using BASH; adapt as necessary for
 your favorite shell.
 
-Extract a few items from all Monte Carlo run 160000 files, concatenating into
-single column per item :
+Extract a few items from all Monte Carlo run 160000 files (nutau GENIE
+simulation performed for oscNext), concatenating into single column per item:
 
 ```bash
 find /tmp/i3/genie/level7_v01.04/160000/ -name "oscNext*.i3*" | \
@@ -105,8 +105,7 @@ find /tmp/i3/genie/level7_v01.04/160000/ -name "oscNext*.i3*" | \
         --category-xform subrun \
         --procs 20 \
         --overwrite \
-        --outdir /tmp/columnar/genie/level7_v01.04/160000 \
-        --compress
+        --outdir /tmp/columnar/genie/level7_v01.04/160000
 ```
 
 If you completed the above and realize you also want the I3GENIEResultDict,
@@ -122,8 +121,7 @@ find /tmp/i3/genie/level7_v01.04/160000/ -name "oscNext*.i3*" | \
         --category-xform subrun \
         --procs 20 \
         --overwrite \
-        --outdir /tmp/columnar/genie/level7_v01.04/160000 \
-        --compress
+        --outdir /tmp/columnar/genie/level7_v01.04/160000
 ```
 
 
@@ -200,3 +198,12 @@ arrays, scalar_cat_indexes = cols.load("/tmp/columnar/genie/level7_v01.04/160000
 # Get the info!
 tau_regen_evt_indices, tau_decay_products = get_tau_info_nb(**arrays["I3MCTree"])
 ```
+
+
+## See Also
+
+The **i3cols** project was developed independently but with of the [Awkward
+Array project](https://github.com/scikit-hep/awkward-1.0). It is an eventual
+goal that the extraction of arrays and other IceCube-specific things from this
+project can remain, while the backend storage and manipulation of arrays can be
+done using that project.
