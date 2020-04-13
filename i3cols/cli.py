@@ -62,9 +62,7 @@ def main(description=__doc__):
     subparser.add_argument("--index-and-concatenate", action="store_true")
     subparser.add_argument("--index-name", default="sourcefile")
     subparser.add_argument(
-        "--category-name-xform",
-        default=None,
-        choices=["oscNext"],
+        "--category-name-xform", default=None, choices=["subrun"],
     )
     subparser.add_argument("--gcd", default=None)
     subparser.add_argument("--sub-event-stream", nargs="+", default=None)
@@ -95,17 +93,17 @@ def main(description=__doc__):
         subparser.add_argument("--keep-tempfiles-on-fail", action="store_true")
         subparser.add_argument("--procs", type=int, default=cpu_count())
 
-    parser_extract_run.add_argument("--keys", nargs="+", default=None) #extract.DFLT_KEYS)
+    parser_extract_run.add_argument(
+        "--keys", nargs="+", default=None
+    )  # extract.DFLT_KEYS)
     parser_extract_season.add_argument(
-        "--sub-event-stream",
-        nargs="+",
-        default=None,
+        "--sub-event-stream", nargs="+", default=None,
     )
     parser_extract_season.add_argument(
         "--keys",
         nargs="+",
         default=None,
-        #default=[k for k in extract.DFLT_KEYS if k not in extract.MC_ONLY_KEYS],
+        # default=[k for k in extract.DFLT_KEYS if k not in extract.MC_ONLY_KEYS],
     )
 
     # Combine runs is unique
@@ -140,6 +138,7 @@ def main(description=__doc__):
             if outdir is None:
                 outdir = path
             func(paths, outdir=outdir, outdtype=outdtype, overwrite=overwrite)
+
         return runit
 
     for funcname in [
@@ -218,8 +217,15 @@ def main(description=__doc__):
 
     category_name_xform = kwargs.pop("category_name_xform", None)
     if category_name_xform is not None:
-        if category_name_xform == "oscNext":
-            category_name_xform = extract.oscnext_run_subrun_category_name_xform
+        if category_name_xform == "subrun":
+            category_name_xform = extract.i3_subrun_category_name_xform
+            index_name = kwargs.pop("index_name", None)
+            if index_name is not None and index_name != "subrun":
+                print(
+                    "WARNING: renaming `index_name` to 'subrun' in"
+                    " accordance with `category_name_xform`"
+                )
+            kwargs["index_name"] = "subrun"
         else:
             raise ValueError(category_name_xform)
         kwargs["category_name_xform"] = category_name_xform

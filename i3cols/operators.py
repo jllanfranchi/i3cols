@@ -60,7 +60,7 @@ def split(
     if callable(on):  # function to operate on `path`
         # Memory map only if no keys specified
         arrays, _ = load(path, keys=inkeys, mmap=inkeys is None)
-        #apply(on, arrays
+        # apply(on, arrays
     elif isinstance(on, string_types):  # index or scalar column path (not ambiguous)
         pass
     elif isinstance(on, Sequence):  # key path
@@ -239,17 +239,18 @@ def iter_col(data, valid, index):
     if isinstance(valid, numba.types.NoneType):
 
         if isinstance(index, numba.types.NoneType):
+
             def gen_impl(data, valid, index):
-                #out = np.empty(shape=len(data), dtype=data.dtype)
+                # out = np.empty(shape=len(data), dtype=data.dtype)
                 for i in range(len(data)):
-                    yield True, data[i : i+1]
+                    yield True, data[i : i + 1]
 
             return gen_impl
 
         else:
 
             def gen_impl(data, valid, index):
-                #out = np.empty(shape=len(index), dtype=data.dtype)
+                # out = np.empty(shape=len(index), dtype=data.dtype)
                 for index_ in index:
                     yield True, data[index_["start"] : index_["stop"]]
 
@@ -261,22 +262,22 @@ def iter_col(data, valid, index):
         if isinstance(index, numba.types.NoneType):
 
             def gen_impl(data, valid, index):
-                #out = np.empty(shape=len(data), dtype=data.dtype)
+                # out = np.empty(shape=len(data), dtype=data.dtype)
                 for i, valid_ in enumerate(valid):
-                    yield valid_, data[i : i+1]
+                    yield valid_, data[i : i + 1]
 
             return gen_impl
 
         else:
 
             def gen_impl(data, valid, index):
-                #out = np.empty(shape=len(index), dtype=data.dtype)
+                # out = np.empty(shape=len(index), dtype=data.dtype)
                 for valid_, index_ in zip(valid, index):
                     yield valid_, data[index_["start"] : index_["stop"]]
 
             return gen_impl
 
 
-#def iter_ncol(arrays):
+# def iter_ncol(arrays):
 #    kwargs = OrderedDict()
 #    for key, array_d in arrays.items():

@@ -481,7 +481,6 @@ class I3WaveformStatus(enum.IntEnum):
     UNDERSHOT = 1 << 3
 
 
-
 class ExtractionError(enum.IntEnum):
     """Error codes that can be set by retro/i3processing/extract_events.py"""
 

@@ -399,7 +399,7 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
                 if (
                     "data.npy" not in files
                     or len(dirs) > 0  # subdirectories
-                    or len(set(files).difference(ARRAY_FNAMES.values())) > 0  # extra files
+                    or set(files).difference(ARRAY_FNAMES.values())  # extra files
                     or keys is not None
                     and basename(dirpath) not in keys
                 ):

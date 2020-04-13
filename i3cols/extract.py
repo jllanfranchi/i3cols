@@ -44,6 +44,7 @@ __all__ = [
     "I3_OSCNEXT_FNAME_RE",
     "I3_MC_ONLY_KEYS",
     "get_i3_data_fname_info",
+    "i3_subrun_category_name_xform",
     "find_gcd_for_data_file",
     "extract_files_individually",
     "extract_season",
@@ -56,10 +57,11 @@ __all__ = [
 ]
 
 from collections import OrderedDict
+
 try:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 except ImportError:
-    from collections import Sequence
+    from collections import Iterable, Sequence
 from copy import deepcopy
 from glob import glob
 from multiprocessing import Pool, cpu_count
@@ -143,21 +145,6 @@ I3_MC_ONLY_KEYS = set(["I3MCWeightDict", "I3MCTree", "I3GENIEResultDict"])
 """Keys that are only valid for Monte Carlo simulation"""
 
 
-def oscnext_run_subrun_category_name_xform(path):
-    """Transform an oscNext i3 file's path into a (run, subrun) tuple (each
-    np.uint32)"""
-    match = I3_OSCNEXT_FNAME_RE.match(os.path.basename(expand(path)))
-    if not match:
-        raise ValueError(
-            'path "{}" is incompatible with known oscNext naming'
-            ' conventions'.format(path)
-        )
-    groupdict = match.groupdict()
-    run = np.uint32(groupdict["run"].lstrip("0"))
-    subrun = np.uint32(groupdict["subrun"].lstrip("0"))
-    return (run, subrun)
-
-
 MYKEYS = [
     "I3EventHeader",
     "I3TriggerHierarchy",
@@ -224,6 +211,20 @@ def get_i3_data_fname_info(path):
             info.pop(key)
 
     return info
+
+
+def i3_subrun_category_name_xform(path):
+    """Transform an i3 file's path into its subrun"""
+    normbasename = os.path.basename(expand(path))
+    match = I3_SUBRUN_RE.match(normbasename)
+    if not match:
+        match = I3_OSCNEXT_FNAME_RE.match(normbasename)
+    if not match:
+        raise ValueError(
+            'path "{}" is incompatible with known I3 naming'
+            " conventions or has no subrun specified".format(path)
+        )
+    return np.uint32(match.groupdict()["subrun"].lstrip("0"))
 
 
 def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
@@ -496,11 +497,20 @@ def extract_files_individually(
             full_tempdir = mkdtemp(dir=tempdir)
 
         for full_path, category_name in zip(full_paths, category_names):
+            if isinstance(category_name, string_types):
+                category_name_dirname = category_name
+            elif isinstance(category_name, Iterable):
+                category_name_dirname = os.path.join(*[str(x) for x in category_name])
+            else:
+                category_name_dirname = index_name + str(category_name)
+
+            print("category_name_dirname", category_name_dirname)
+
             if index_and_concatenate:
-                thisfile_outdir = os.path.join(full_tempdir, category_name)
+                thisfile_outdir = os.path.join(full_tempdir, category_name_dirname)
                 category_array_map[category_name] = thisfile_outdir
             else:
-                thisfile_outdir = os.path.join(outdir, category_name)
+                thisfile_outdir = os.path.join(outdir, category_name_dirname)
                 if compress:
                     paths_to_compress.append(thisfile_outdir)
 
@@ -524,9 +534,7 @@ def extract_files_individually(
             if procs == 1:
                 run_icetray_converter(**kwargs)
             else:
-                results.append(
-                    pool.apply_async(run_icetray_converter, tuple(), kwargs)
-                )
+                results.append(pool.apply_async(run_icetray_converter, tuple(), kwargs))
 
         if pool is not None:
             pool.close()
@@ -553,7 +561,7 @@ def extract_files_individually(
             if keep_tempfiles_on_fail:
                 print(
                     'Temp dir/files will NOT be removed; see "{}" to inspect'
-                    ' and manually remove'.format(full_tempdir)
+                    " and manually remove".format(full_tempdir)
                 )
             else:
                 try:
@@ -804,7 +812,9 @@ def extract_run(
 
         if is_mc:
             print("is_mc")
-            assert isinstance(gcd, string_types) and os.path.isfile(expand(gcd)), str(gcd)
+            assert isinstance(gcd, string_types) and os.path.isfile(expand(gcd)), str(
+                gcd
+            )
             gcd = expand(gcd)
         else:
             print("is_data")
