@@ -465,9 +465,7 @@ def extract_files_separately(
     num_unique_categories = len(set(categories))
     if num_unique_categories != len(categories):
         raise ValueError(
-            "Duplicated categories detected: {}".format(
-                list(zip(paths, categories))
-            )
+            "Duplicated categories detected: {}".format(list(zip(paths, categories)))
         )
 
     gcd_is_dir = False
