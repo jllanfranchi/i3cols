@@ -194,7 +194,7 @@ def main(description=__doc__):
         path_argname = None
         if "paths" in args:
             subparser.add_argument("paths", nargs="*", default=sys.stdin)
-            subparser.add_argument("sort", action="store_true")
+            subparser.add_argument("--sort", action="store_true")
         elif "path" in args:
             subparser.add_argument("path", nargs="*", default=sys.stdin)
 
