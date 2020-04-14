@@ -24,7 +24,7 @@ if sys.version_info < (3, 4):
 
 setup(
     name="i3cols-jllanfranchi",
-    version="0.1",
+    version="0.1.2",
     author="Justin L. Lanfranchi",
     author_email="jll1062@phys.psu.edu",
     description="Columnar storage for and operation on IceCube data",
