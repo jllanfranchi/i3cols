@@ -20,30 +20,46 @@ Beyond collecting data, performing event splitting, and real-time algorithms,
 analysis often is most efficient and straightforward to work with specific
 features of events atomically: i.e., in a columnar fashion.
 
-**i3cols** allows working with IceCube data in this way, allowing new and novel
-ways of interacting with data which should be more natural and efficient for
-many common use-cases in Python/Numpy:
+Two existing options are writing data to ROOT files and HDF5 files. The former
+requires a learning curve of its own outside of Python/Numpy, though possibly
+through projects like [Uproot](https://github.com/scikit-hep/uproot), such files
+could be more practical to use for Python-based analysis. HDF5 files suffer from
+the inability to be manipulated in parallel from Python and present an
+unessential layer of complexity around what we actually want and use: Numpy
+arrays of data.
+
+**i3cols** allows working with IceCube data in columnar fashion without added
+complexity of libraries beyond Numpy, and both the columnar nature and the
+simplicity of the data representation allows more straightforward as well as
+new and novel ways of interacting with data which should be more natural and
+efficient for many common use-cases in Python/Numpy:
 
 
 ### Basics
 
 1. Apply numpy operations directly to data arrays
-2. Extract data columns to pass to machine learning tools directly
+2. Extract data columns to pass to machine learning tools directly or at most
+   with simple indexing; e.g., to extract the azimuthal direction of all
+   particles: `particles["dir"]["azimuth"]`.
 3. Memory mapping allows chunked operations and arbitrary reading and/or
-   writing to the same arrays from multiple processes (just make sure they
-   don't try to write to the same elements!)
+   writing to the same arrays from multiple processes (just make sure the
+   processes don't try to write to the same elements).
 4. New levels of processing entail adding new columns, without the need to
    duplicate all data that came before. This has the disadvantage that cuts
    that remove the vast majority of events result in columns that have the same
    number of rows as the pre-cut. However, the advantage to working this way is
    that it is trivial to go back to the lowest-level of processing and also to
    inspect how the cuts affect all variables contained at any level of
-   processing.
+   processing. (A future goal is to also accommodate efficiently storing a
+   subset of rows by creating a "subscalar" column that only contains rows
+   where its or another column's "valid" array is True.)
 5. Numpy arrays with structured dtypes can be passed directly to Numba for
-   efficient looping with similar performance to compiled C++ code as Numba is
-   just-in-time (JIT)-compiled.
-6. There is no dependency upon IceCube software once they have been extracted.
-7. If you think of a new item you want to extract from the source I3 files
+   efficient looping with similar performance to compiled C++ code, as Numba is
+   just-in-time (JIT)-compiled to machine code.
+6. There is no dependency upon IceCube software once data has been extracted.
+   This can be seen as a positive (portability) and a negative (IceCube software
+   has been developed, in part, to perform analysis tasks).
+7. If you think of a new item you want to extract from the source i3 files
    after already performing an extraction, it is _much_ faster and the process
    only yields the new column (rather than an entirely new file, as is the case
    with HDF5 extraction).
@@ -61,14 +77,46 @@ many common use-cases in Python/Numpy:
     came from hundreds of thousands of small i3 files does not slow down
     analysis or grind cluster storage to a halt). If the concatenated arrays
     are too large to fit into memory, you can operate on arrays in arbitrary
-    chunks of events and/or work directly on the data on disk via via Numpy's
-    built-in memory mapping (which is transparent to Numpy operations)
-2. Source i3 files can be explicitly known to analysis, if you want (via the
-    Numpy arrays called in i3cals "category indexes")
+    chunks of events and/or work directly on the data on disk via Numpy's
+    built-in memory mapping (which is transparent to Numpy operations).
+2. Source i3 files can be explicitly known to analysis if you want (via the
+    Numpy arrays called in i3cols "category indexes").
 3. Flattened datastructures allow efficient operations on them. E.g., looking
     at all pulses is trivial without needing to traverse a hierarchy. But
     information about the hierarchy is preserved, so operating in that manner
     is still possible (and still very fast with Numpy and/or Numba).
+
+### Data storage
+
+There are two kinds of data currently supported:
+
+1. **Scalar data**: One item per event. This includes arbitrarily complex dtypes, including a vector of N of a thing. The only requirement is that every event must also have exactly N of those things. This requires a _data_ array which has one entry (row) per event. 
+2. **Vector data**: Zero, one, or more of an item per event. E.g., pulses. This requires both _data_ and _index_ arrays. The index array has one entry (row) per event which indicates the _start_ and _stop_ indices of that event's data. Meanwhile, _data_ can be arbitrarily long.
+
+To accomodate arbitrary missing or invalid data, there can be an optional _valid_ array alongside the other arrays.
+
+One **column** consists of the container (either a directory or .npz file) and the set of the above arrays it contains. The directory version of this looks on disk like, for example for _InIcePulses_ (which is vector data) with a valid array:
+```
+InIcePulses/
+  |
+  +-- data.npy
+  |
+  +-- valid.npy
+  |
+  +-- index.npy
+```
+If the above is compressed, it becomes a single .npz file: `InIcePulses.npz`. Within the file, the arrays can be accessed via their names "data", "valid", and/or "index". Here, we load all arrays that are present into a dictionary:
+```python
+with np.load("InIcePulses.npz") as npz:
+    array_d = {name: npz.get(name, None) for name in ["data", "valid", "index"]}
+```
+Note there is a convenience function to do this (and load any category indices) for a single item or for an entire directory, transparent to compression: `arrays, category_indexes = i3cols.cols.load(dirpath)`.
+
+#### Unsupported (or awkwardly supported) data types
+
+1. **Mixture of types**: Scalar data where the item in one event has one type while another event (for that same item) has another type; similarly for vector data where dtype changes either within or across events. E.g., if the datatype contains a different-length-per-event vector as one field within the type (while all other parts of the type are constant-length). This can be accommodated (to varying degrees of ineffficiency) by creating a type that contains all fields and just _one_ of the vector type, and then duplicating the fields that remain constant for every value in the vector.
+
+One "column" consists of between 1 and 3 Numpy arrays stored in a directory. For example, if we extract "InIcePulses"
 
 
 ## Installation
@@ -192,8 +240,8 @@ def get_tau_info(data, index):
     return tau_regen_evt_indices, tau_decay_products
 
 
-# Load arrays, memory-mapped
-arrays, scalar_cat_indexes = cols.load("/tmp/columnar/genie/level7_v01.04/160000", mmap=True)
+# Load just the I3MCTree (regardless of presence other columns), memory-mapped 
+arrays, category_indexes = cols.load("/tmp/columnar/genie/level7_v01.04/160000", keys="I3MCTree", mmap=True)
 
 # Get the info!
 tau_regen_evt_indices, tau_decay_products = get_tau_info_nb(**arrays["I3MCTree"])
