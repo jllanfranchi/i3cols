@@ -27,7 +27,7 @@ setup(
     version="0.1.3",
     author="Justin L. Lanfranchi",
     author_email="jll1062@phys.psu.edu",
-    description="Columnar storage for and operation on IceCube data",
+    description="Numpy columnar storage for IceCube data",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/jllanfranchi/i3cols",
