@@ -90,8 +90,8 @@ efficient for many common use-cases in Python/Numpy:
 
 There are two kinds of data currently supported:
 
-1. **Scalar data**: One item per event. This includes arbitrarily complex dtypes, including a vector of N of a thing. The only requirement is that every event must also have exactly N of those things. This requires a _data_ array which has one entry (row) per event. 
-2. **Vector data**: Zero, one, or more of an item per event. E.g., pulses. This requires both _data_ and _index_ arrays. The index array has one entry (row) per event which indicates the _start_ and _stop_ indices of that event's data. Meanwhile, _data_ can be arbitrarily long.
+1. **Scalar data**: One item per event. This includes arbitrarily complex dtypes, including a vector of N of a thing. The only requirement is that every event must also have exactly N of those things. This requires a _data_ array which has one entry per event. 
+2. **Vector data**: Zero, one, or more of an item per event. E.g., pulses. This requires both _data_ and _index_ arrays. The index array has one entry per event which indicates the _start_ and _stop_ indices of that event's data. Meanwhile, _data_ can be arbitrarily long.
 
 To accomodate arbitrary missing or invalid data, there can be an optional _valid_ array alongside the other arrays.
 
@@ -115,8 +115,6 @@ Note there is a convenience function to do this (and load any category indices) 
 #### Unsupported (or awkwardly supported) data types
 
 1. **Mixture of types**: Scalar data where the item in one event has one type while another event (for that same item) has another type; similarly for vector data where dtype changes either within or across events. E.g., if the datatype contains a different-length-per-event vector as one field within the type (while all other parts of the type are constant-length). This can be accommodated (to varying degrees of ineffficiency) by creating a type that contains all fields and just _one_ of the vector type, and then duplicating the fields that remain constant for every value in the vector.
-
-One "column" consists of between 1 and 3 Numpy arrays stored in a directory. For example, if we extract "InIcePulses"
 
 
 ## Installation
@@ -171,7 +169,6 @@ find /tmp/i3/genie/level7_v01.04/160000/ -name "oscNext*.i3*" | \
         --overwrite \
         --outdir /tmp/columnar/genie/level7_v01.04/160000
 ```
-
 
 Extract all keys from IC86.11 season. All subrun files for a given run are
 combined transparently into one and then all runs are combined in the end into
