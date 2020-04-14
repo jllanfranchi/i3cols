@@ -37,6 +37,7 @@ __all__ = [
     "load",
     "save_item",
     "check_outdir_and_keys",
+    "get_valid_key_func",
     "find_array_paths",
     "load_contained_paths",
     "compress",
@@ -58,10 +59,11 @@ try:
 except ImportError:
     from collections import Mapping, MutableMapping, MutableSequence, Sequence
 from copy import deepcopy
+import fnmatch
 from multiprocessing import Pool, cpu_count
-from os import listdir, remove, walk
-from os.path import basename, dirname, exists, isdir, isfile, join, splitext
-from shutil import rmtree
+import os
+import re
+import shutil
 
 import numpy as np
 from six import string_types
@@ -75,11 +77,14 @@ from i3cols.utils import expand, mkdir, nsort_key_func
 #   If version specified, write to that or read from that. On read, if version
 #   specified but only "bare" key, load the bare key (assume it is valid across
 #   versions).
-# TODO: optional masking arrays
+# TODO: arrays with fewer than one entry per event: use optional masking array
+#   or reference to another column's "valid" array?
 #   * Per-scalar (i.e., per-event) that live in directory like
 #     category__index.npy files makes most sense
 #   * Per-key alongside "data", "index", and "valid" arrays within key dir?
-# TODO: existing keys logic might not be working now
+# TODO: existing keys logic might not be working now; fix this, and account for
+#   compressed and/or decompressed files (also for overwriting when the mode of
+#   output is different from what exists)
 
 
 CATEGORY_INDEX_POSTFIX = "__scalar_index.npy"
@@ -129,10 +134,10 @@ def save_item(path, key, data, valid=None, index=None, overwrite=False):
 
     """
     path = expand(path)
-    if exists(path):
-        assert isdir(path)
+    if os.path.exists(path):
+        assert os.path.isdir(path)
 
-    outdirpath = join(path, key)
+    outdirpath = os.path.join(path, key)
 
     outfpaths_saved = []
     parent_outdir_created = mkdir(outdirpath)
@@ -140,21 +145,21 @@ def save_item(path, key, data, valid=None, index=None, overwrite=False):
         for name, array in [("data", data), ("valid", valid), ("index", index)]:
             if array is None:
                 continue
-            outfpath = join(outdirpath, name + ".npy")
-            if not overwrite and isfile(outfpath):
+            outfpath = os.path.join(outdirpath, name + ".npy")
+            if not overwrite and os.path.isfile(outfpath):
                 raise IOError('file exists at "{}"'.format(outfpath))
             np.save(outfpath, array)
             outfpaths_saved.append(outfpath)
     except:
         if parent_outdir_created is not None:
             try:
-                rmtree(parent_outdir_created)
+                shutil.rmtree(parent_outdir_created)
             except Exception as err:
                 print(err)
         else:
             for outfpath in outfpaths_saved:
                 try:
-                    remove(outfpath)
+                    os.remove(outfpath)
                 except Exception as err:
                     print(err)
         raise
@@ -164,10 +169,10 @@ def check_outdir_and_keys(outdir=None, outkeys=None, overwrite=False):
     """Validate `outdir` and determine if files would be overwritten"""
     if outdir is not None:
         outdir = expand(outdir)
-        if exists(outdir):
-            assert isdir(outdir)
+        if os.path.exists(outdir):
+            assert os.path.isdir(outdir)
 
-    if not overwrite and outdir is not None and outkeys:
+    if not overwrite and outdir is not None:
         outarrays, _ = find_array_paths(outdir, keys=outkeys)
         existing_keys = sorted(set(outkeys).intersection(outarrays.keys()))
         if existing_keys:
@@ -176,6 +181,80 @@ def check_outdir_and_keys(outdir=None, outkeys=None, overwrite=False):
             )
 
     return outdir
+
+
+def get_valid_key_func(keys):
+    """Translate `keys` argument into a list of keys or None to be consumed by
+    functions in this module.
+
+
+    Parameters
+    ----------
+    keys : str, iterable thereof, None, or callable
+        If `keys` is:
+            * A string or singleton string (i.e., an iterable or sequence
+              containing a single string) which represents a path to a file, it
+              is interpreted as a "keys" file. Keys file must contain
+              whitespace-separated key names; do NOT use single- or
+              double-quotation marks in the file.
+            * A string or iterable thereof of key names, including optional
+              glob patterns See Python's `fnmatch` module for more description,
+              but legal Glob patterns are "?" for any single character, "*" for
+              any number of any character, and "[abfg]" to match specific
+              characters, in this case one of "a", "b", "f", or "g".
+            * None matches any key (same as specifying "*")
+            * A callable is assumed to be a `is_key_valid` function; this is
+              simply returned
+
+
+    Returns
+    -------
+    is_key_valid : callable
+        Callable that returns True or False given a akey. Call via .. ::
+
+            is_valid = is_key_valid(key)
+
+    """
+    if callable(keys):
+        return keys
+
+    if keys is None:
+        return lambda x: True
+
+    if isinstance(keys, string_types):
+        keys = [keys]
+    keys = list(keys)
+
+    if len(keys) == 1 and os.path.isfile(expand(keys[0])):
+        with open(expand(keys[0]), "r") as fh:
+            txt = fh.read()
+        keys = [k.strip() for k in txt.strip().split() if k]
+
+    glob_patterns = set()
+    named_keys = set()
+    for key in keys:
+        if key == "*":
+            keys = None
+            break
+        if "*" in key or "?" in key or ("[" in key and "]" in key):
+            glob_patterns.add(key)
+        else:
+            named_keys.add(key)
+
+    regexes = [
+        re.compile(fnmatch.translate(p), flags=re.IGNORECASE)
+        for p in sorted(glob_patterns)
+    ]
+
+    def is_key_valid(key):
+        if key in named_keys:
+            return True
+        for regex in regexes:
+            if regex.match(key):
+                return True
+        return False
+
+    return is_key_valid
 
 
 def find_array_paths(path, keys=None):
@@ -189,7 +268,9 @@ def find_array_paths(path, keys=None):
 
     keys : str, iterable thereof, or None; optional
         Only retrieve the subset of `keys` that are present in `path`; find all
-        if `keys` is None
+        if `keys` is None. Glob-style matching (any char "?", any number of
+        chars "*", and one of chars "[abc]") is supported and matches
+        are _case-insensitive_.
 
     Returns
     -------
@@ -198,23 +279,19 @@ def find_array_paths(path, keys=None):
 
     """
     path = expand(path)
-    assert isdir(path), str(path)
+    assert os.path.isdir(path), str(path)
 
-    if keys is not None:
-        if isinstance(keys, string_types):
-            keys = set([keys])
-        else:
-            keys = set(keys)
+    is_key_valid = get_valid_key_func(keys)
 
     arrays = OrderedDict()
     category_indexes = OrderedDict()
 
     unrecognized = []
 
-    for name in sorted(listdir(path), key=nsort_key_func):
-        subpath = join(path, name)
+    for name in sorted(os.listdir(path), key=nsort_key_func):
+        subpath = os.path.join(path, name)
 
-        if isfile(subpath):
+        if os.path.isfile(subpath):
             if name.endswith(CATEGORY_INDEX_POSTFIX):
                 category = name[: -len(CATEGORY_INDEX_POSTFIX)]
                 category_indexes[category] = subpath
@@ -222,7 +299,7 @@ def find_array_paths(path, keys=None):
 
             if name.endswith(".npz"):
                 key = name[:-4]
-                if keys is not None and key not in keys:
+                if not is_key_valid(key):
                     continue
 
                 is_array = False
@@ -251,22 +328,22 @@ def find_array_paths(path, keys=None):
 
                 continue
 
-        if not isdir(subpath):
+        if not os.path.isdir(subpath):
             unrecognized.append(subpath)
             continue
 
         array_d = OrderedDict()
-        contents = set(listdir(subpath))
+        contents = set(os.listdir(subpath))
         for array_name in LEGAL_ARRAY_NAMES:
             fname = array_name + ".npy"
             if fname in contents:
-                array_d[array_name] = join(subpath, fname)
+                array_d[array_name] = os.path.join(subpath, fname)
                 contents.remove(fname)
 
         for subname in sorted(contents):
-            unrecognized.append(join(subpath, subname))
+            unrecognized.append(os.path.join(subpath, subname))
 
-        if array_d and (keys is None or name in keys):
+        if array_d and is_key_valid(name):
             arrays[name] = array_d
 
     if not arrays and not category_indexes:
@@ -313,8 +390,8 @@ def load_contained_paths(obj, inplace=False, mmap=False):
     my_kwargs = dict(inplace=inplace, mmap=mmap)
 
     if isinstance(obj, string_types):  # numpy strings evaluate False
-        if isfile(obj):
-            _, ext = splitext(obj)
+        if os.path.isfile(obj):
+            _, ext = os.path.splitext(obj)
             if ext == ".npy":
                 obj = np.load(obj, mmap_mode="r" if mmap else None)
             elif ext == ".npz":
@@ -378,12 +455,9 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
         paths = [paths]
     paths = [expand(p) for p in paths]
     for path in paths:
-        assert isdir(path), path
+        assert os.path.isdir(path), path
 
-    if isinstance(keys, string_types):
-        keys = set([keys])
-    elif keys is not None:
-        keys = set(keys)
+    is_key_valid = get_valid_key_func(keys)
 
     pool = None
     if procs > 1:
@@ -391,7 +465,7 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
 
     try:
         for path in paths:
-            for dirpath, dirs, files in walk(path):
+            for dirpath, dirs, files in os.walk(path):
                 if recurse:
                     dirs.sort(key=nsort_key_func)
                 else:
@@ -400,8 +474,7 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
                     "data.npy" not in files
                     or len(dirs) > 0  # subdirectories
                     or set(files).difference(ARRAY_FNAMES.values())  # extra files
-                    or keys is not None
-                    and basename(dirpath) not in keys
+                    or not is_key_valid(dirpath)
                 ):
                     continue
 
@@ -428,14 +501,14 @@ def _compress(dirpath, files, keep):
     array_d = OrderedDict()
     for array_name, array_fname in ARRAY_FNAMES.items():
         if array_fname in files:
-            array_d[array_name] = np.load(join(dirpath, array_fname))
+            array_d[array_name] = np.load(os.path.join(dirpath, array_fname))
     if not array_d:
         return
-    archivepath = join(dirpath.rstrip("/") + ".npz")
+    archivepath = os.path.join(dirpath.rstrip("/") + ".npz")
     np.savez_compressed(archivepath, **array_d)
     if not keep:
         try:
-            rmtree(dirpath)
+            shutil.rmtree(dirpath)
         except Exception as err:
             print("WARNING: unable to remove dir {}".format(dirpath))
             print(err)
@@ -468,10 +541,7 @@ def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
         paths = [paths]
     paths = [expand(p) for p in paths]
 
-    if isinstance(keys, string_types):
-        keys = set([keys])
-    elif keys is not None:
-        keys = set(keys)
+    is_key_valid = get_valid_key_func(keys)
 
     pool = None
     if procs > 1:
@@ -480,11 +550,15 @@ def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
     try:
         for path in paths:
             if (
-                isfile(path)
+                os.path.isfile(path)
                 and path.endswith(".npz")
-                and (keys is None or path[:-4] in keys)
+                and is_key_valid(path[:-4])
             ):
-                kwargs = dict(dirpath=dirname(path), filename=basename(path), keep=keep)
+                kwargs = dict(
+                    dirpath=os.path.dirname(path),
+                    filename=os.path.basename(path),
+                    keep=keep,
+                )
                 if procs == 1:
                     _decompress(**kwargs)
                 else:
@@ -493,7 +567,7 @@ def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
 
             # else: is directory
 
-            for dirpath, dirnames, filenames in walk(path):
+            for dirpath, dirnames, filenames in os.walk(path):
                 if recurse:
                     dirnames.sort(key=nsort_key_func)
                 else:
@@ -501,9 +575,8 @@ def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
 
                 for filename in filenames:
                     if filename.endswith(".npz"):
-                        if keys is not None:
-                            if filename[:-4] not in keys:
-                                continue
+                        if not is_key_valid(filename[:-4]):
+                            continue
                         kwargs = dict(dirpath=dirpath, filename=filename, keep=keep)
                         if procs == 1:
                             _decompress(**kwargs)
@@ -542,8 +615,8 @@ def _decompress(dirpath, filename, keep):
     """
     key = filename[:-4]
 
-    filepath = join(dirpath, filename)
-    keydirpath = join(dirpath, key)
+    filepath = os.path.join(dirpath, filename)
+    keydirpath = os.path.join(dirpath, key)
     array_d = OrderedDict()
 
     npz = np.load(filepath)
@@ -564,24 +637,24 @@ def _decompress(dirpath, filename, keep):
     parent_dir_created = mkdir(keydirpath)
     try:
         for array_name, array in array_d.items():
-            arraypath = join(keydirpath, array_name + ".npy")
+            arraypath = os.path.join(keydirpath, array_name + ".npy")
             np.save(arraypath, array)
             subfilepaths_created.append(arraypath)
     except:
         if parent_dir_created is not None:
             try:
-                rmtree(parent_dir_created)
+                shutil.rmtree(parent_dir_created)
             except Exception as err:
                 print(err)
         else:
             for subfilepath in subfilepaths_created:
                 try:
-                    remove(subfilepath)
+                    os.remove(subfilepath)
                 except Exception as err:
                     print(err)
         raise
     if not keep:
-        remove(filepath)
+        os.remove(filepath)
 
     return True
 
@@ -646,9 +719,9 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
             # Until we know we need one (i.e., when an event is missing this
             # `key`), the "valid" mask array is omitted
             if outdir is not None:
-                dpath = join(outdir, key)
+                dpath = os.path.join(outdir, key)
                 mkdir(dpath)
-                data_array_path = join(dpath, "data.npy")
+                data_array_path = os.path.join(dpath, "data.npy")
                 scalar_arrays_paths[key] = dict(data=data_array_path)
                 data_array = np.lib.format.open_memmap(
                     data_array_path, mode="w+", shape=(num_frames,), dtype=dtype
@@ -664,10 +737,10 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
 
         for key, (length, dtype) in vector_dtypes.items():
             if outdir is not None:
-                dpath = join(outdir, key)
+                dpath = os.path.join(outdir, key)
                 mkdir(dpath)
-                data_array_path = join(dpath, "data.npy")
-                index_array_path = join(dpath, "index.npy")
+                data_array_path = os.path.join(dpath, "data.npy")
+                index_array_path = os.path.join(dpath, "index.npy")
                 vector_arrays_paths[key] = dict(
                     data=data_array_path, index=index_array_path
                 )
@@ -693,8 +766,8 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
                 if val is None:
                     if "valid" not in array_d:
                         if outdir is not None:
-                            dpath = join(outdir, key)
-                            valid_array_path = join(dpath, "valid.npy")
+                            dpath = os.path.join(outdir, key)
+                            valid_array_path = os.path.join(dpath, "valid.npy")
                             scalar_arrays_paths[key]["valid"] = valid_array_path
                             valid_array = np.lib.format.open_memmap(
                                 valid_array_path,
@@ -741,7 +814,7 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
     except Exception:
         if parent_outdir_created is not None:
             try:
-                rmtree(parent_outdir_created)
+                shutil.rmtree(parent_outdir_created)
             except Exception as err:
                 print(err)
         raise
@@ -925,7 +998,7 @@ def index_and_concatenate_arrays(
         )
         if outdir is not None:
             category_index = np.lib.format.open_memmap(
-                join(outdir, index_name + CATEGORY_INDEX_POSTFIX),
+                os.path.join(outdir, index_name + CATEGORY_INDEX_POSTFIX),
                 mode="w+",
                 shape=(len(categories),),
                 dtype=category_index_dtype,
@@ -973,10 +1046,10 @@ def index_and_concatenate_arrays(
             # Create big data array
 
             if outdir is not None:
-                dpath = join(outdir, key)
+                dpath = os.path.join(outdir, key)
                 mkdir(dpath)
                 data = np.lib.format.open_memmap(
-                    join(dpath, "data.npy"),
+                    os.path.join(dpath, "data.npy"),
                     mode="w+",
                     shape=(data_length,),
                     dtype=dtype,
@@ -989,10 +1062,10 @@ def index_and_concatenate_arrays(
             valid = None
             if key in keys_requiring_valid_array:
                 if outdir is not None:
-                    dpath = join(outdir, key)
+                    dpath = os.path.join(outdir, key)
                     mkdir(dpath)
                     valid = np.lib.format.open_memmap(
-                        join(dpath, "valid.npy"),
+                        os.path.join(dpath, "valid.npy"),
                         mode="w+",
                         shape=(total_scalar_length,),
                         dtype=np.bool8,
@@ -1005,10 +1078,10 @@ def index_and_concatenate_arrays(
             index = None
             if key in vector_keys:
                 if outdir is not None:
-                    dpath = join(outdir, key)
+                    dpath = os.path.join(outdir, key)
                     mkdir(dpath)
                     index = np.lib.format.open_memmap(
-                        join(dpath, "index.npy"),
+                        os.path.join(dpath, "index.npy"),
                         mode="w+",
                         shape=(total_scalar_length,),
                         dtype=dt.START_STOP_T,
@@ -1070,7 +1143,7 @@ def index_and_concatenate_arrays(
     except Exception:
         if parent_outdir_created is not None:
             try:
-                rmtree(parent_outdir_created)
+                shutil.rmtree(parent_outdir_created)
             except Exception as err:
                 print(err)
         raise

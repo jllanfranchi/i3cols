@@ -277,8 +277,8 @@ def xlate_keys_arg(keys):
 
     Legal values for `keys` are:
 
-        * str or singleton iterable containing a path to a "keys" file
-          (whitespace-separated key names)
+        * str or singleton (iterable or sequence with one item) containing a
+          path to a "keys" file (whitespace-separated key names)
         * str or iterable thereof of key names
         * None
 
@@ -510,30 +510,28 @@ def extract_files_separately(
     if isinstance(sub_event_stream, string_types):
         sub_event_stream = [sub_event_stream]
 
-    keys = xlate_keys_arg(keys)
-
     if tempdir is not None:
         if not index_and_concatenate:
             print("NOTE: `tempdir` is not used if `index_and_concatenate` is False")
         else:
             tempdir = expand(tempdir)
 
-    if keys is None:
-        print("Extracting all keys in all files")
-    else:
-        if not overwrite:
-            existing_arrays, _ = cols.find_array_paths(outdir, keys=keys)
-            existing_keys = set(existing_arrays.keys())
-            redundant_keys = existing_keys.intersection(keys)
-            if redundant_keys:
-                print("Will not extract existing keys:", sorted(redundant_keys))
-                keys = [k for k in keys if k not in redundant_keys]
+    #if keys is None:
+    #    print("Extracting all keys in all files")
+    #else:
+    #    if not overwrite:
+    #        existing_arrays, _ = cols.find_array_paths(outdir, keys=keys)
+    #        existing_keys = set(existing_arrays.keys())
+    #        redundant_keys = existing_keys.intersection(keys)
+    #        if redundant_keys:
+    #            print("Will not extract existing keys:", sorted(redundant_keys))
+    #            keys = [k for k in keys if k not in redundant_keys]
 
-        if len(keys) == 0:
-            print("No keys to extract!")
-            return
+    #    if len(keys) == 0:
+    #        print("No keys to extract!")
+    #        return
 
-        print("Keys remaining to extract:", keys)
+    #    print("Keys remaining to extract:", keys)
 
     procs = min(procs, len(full_paths))
 
@@ -751,27 +749,27 @@ def extract_files_as_one(
     if isinstance(sub_event_stream, string_types):
         sub_event_stream = [sub_event_stream]
 
-    keys = xlate_keys_arg(keys)
+    is_key_valid = cols.get_valid_key_func(keys)
 
-    if keys is None:
-        print("Extracting all keys in all files")
-    else:
-        if not overwrite:
-            existing_arrays, _ = cols.find_array_paths(outdir, keys=keys)
-            existing_keys = set(existing_arrays.keys())
-            redundant_keys = existing_keys.intersection(keys)
-            if redundant_keys:
-                print("Will not extract existing keys:", sorted(redundant_keys))
-                keys = [k for k in keys if k not in redundant_keys]
+    #if keys is None:
+    #    print("Extracting all keys in all files")
+    #else:
+    #    if not overwrite:
+    #        existing_arrays, _ = cols.find_array_paths(outdir, keys=keys)
+    #        existing_keys = set(existing_arrays.keys())
+    #        redundant_keys = existing_keys.intersection(keys)
+    #        if redundant_keys:
+    #            print("Will not extract existing keys:", sorted(redundant_keys))
+    #            keys = [k for k in keys if k not in redundant_keys]
 
-        if len(keys) == 0:
-            print("No keys to extract!")
-            return
+    #    if len(keys) == 0:
+    #        print("No keys to extract!")
+    #        return
 
-        print("Keys remaining to extract:", keys)
+    #    print("Keys remaining to extract:", keys)
 
     run_icetray_converter(
-        paths=paths, sub_event_stream=sub_event_stream, keys=keys, outdir=outdir
+        paths=paths, sub_event_stream=sub_event_stream, keys=is_key_valid, outdir=outdir
     )
 
     if compress:
@@ -834,37 +832,35 @@ def extract_season(
     if tempdir is not None:
         tempdir = expand(tempdir)
 
-    keys = xlate_keys_arg(keys)
-
     if procs is None:
         procs = cpu_count()
 
     # match = IC_SEASON_DIR_RE.search(os.path.basename(path))
     # assert match, 'Path not a season directory? "{}"'.format(os.path.basename(path))
 
-    if keys is None:
-        print("Extracting all keys in all files")
-    else:
-        if not overwrite:
-            existing_arrays, _ = cols.find_array_paths(outdir)
-            existing_keys = set(existing_arrays.keys())
-            redundant_keys = existing_keys.intersection(keys)
-            if redundant_keys:
-                print("will not extract existing keys:", sorted(redundant_keys))
-                keys = [k for k in keys if k not in redundant_keys]
+    #if keys is None:
+    #    print("Extracting all keys in all files")
+    #else:
+    #    if not overwrite:
+    #        existing_arrays, _ = cols.find_array_paths(outdir)
+    #        existing_keys = set(existing_arrays.keys())
+    #        redundant_keys = existing_keys.intersection(keys)
+    #        if redundant_keys:
+    #            print("will not extract existing keys:", sorted(redundant_keys))
+    #            keys = [k for k in keys if k not in redundant_keys]
 
-        invalid_keys = I3_MC_ONLY_KEYS.intersection(keys)
-        if invalid_keys:
-            print(
-                "MC-only keys {} were specified but this is data, so these"
-                " will be skipped.".format(sorted(invalid_keys))
-            )
-        keys = [k for k in keys if k not in I3_MC_ONLY_KEYS]
-        print("keys remaining to extract:", keys)
+    #    invalid_keys = I3_MC_ONLY_KEYS.intersection(keys)
+    #    if invalid_keys:
+    #        print(
+    #            "MC-only keys {} were specified but this is data, so these"
+    #            " will be skipped.".format(sorted(invalid_keys))
+    #        )
+    #    keys = [k for k in keys if k not in I3_MC_ONLY_KEYS]
+    #    print("keys remaining to extract:", keys)
 
-        if len(keys) == 0:
-            print("nothing to do!")
-            return
+    #    if len(keys) == 0:
+    #        print("nothing to do!")
+    #        return
 
     run_dirpaths = []
     for basepath in sorted(os.listdir(path), key=nsort_key_func):
@@ -1028,7 +1024,7 @@ def combine_runs(path, outdir, keys=None, mmap=True):
     assert os.path.isdir(path), str(path)
     outdir = expand(outdir)
 
-    keys = xlate_keys_arg(keys)
+    is_key_valid = cols.get_valid_key_func(keys)
 
     run_dirs = []
     for subname in sorted(os.listdir(path), key=nsort_key_func):
@@ -1051,7 +1047,7 @@ def combine_runs(path, outdir, keys=None, mmap=True):
     existing_category_indexes = OrderedDict()
 
     for run_int, run_dir in run_dirs:
-        array_map[run_int], csi = cols.find_array_paths(run_dir, keys=keys)
+        array_map[run_int], csi = cols.find_array_paths(run_dir, keys=is_key_valid)
         if csi:
             existing_category_indexes[run_int] = csi
 
@@ -1070,12 +1066,14 @@ def run_icetray_converter(paths, outdir, sub_event_stream, keys):
     """Simple function callable, e.g., by subprocesses (i.e., to run in
     parallel)
 
+
     Parameters
     ----------
     paths
     outdir
     sub_event_stream
     keys
+
 
     Returns
     -------
@@ -1084,6 +1082,7 @@ def run_icetray_converter(paths, outdir, sub_event_stream, keys):
     """
     from I3Tray import I3Tray
 
+    is_key_valid = cols.get_valid_key_func(keys)
     converter = ConvertI3ToNumpy()
 
     tray = I3Tray()
@@ -1092,7 +1091,7 @@ def run_icetray_converter(paths, outdir, sub_event_stream, keys):
         _type=converter,
         _name="ConvertI3ToNumpy",
         sub_event_stream=sub_event_stream,
-        keys=keys,
+        keys=is_key_valid,
     )
     tray.Execute()
     tray.Finish()
@@ -1290,7 +1289,8 @@ class ConvertI3ToNumpy(object):
             elif frame["I3EventHeader"].sub_event_stream not in set(sub_event_stream):
                 return False
 
-        frame_data = self.extract_frame(frame, keys=keys)
+        is_key_valid = cols.get_valid_key_func(keys)
+        frame_data = self.extract_frame(frame, keys=is_key_valid)
         self.frame_data.append(frame_data)
         return False
 
@@ -1322,29 +1322,29 @@ class ConvertI3ToNumpy(object):
         Parameters
         ----------
         frame : icetray.I3Frame
-        keys : str, iterable thereof, or None; optional
+        keys : str, iterable thereof, None, or callable; optional
 
         """
         self.frame = frame
 
-        auto_mode = False
+        is_key_valid = cols.get_valid_key_func(keys)
 
-        keys = xlate_keys_arg(keys)
-        if keys is None:
-            auto_mode = True
-            keys = frame.keys()
-        keys = sorted(set(keys).difference(self.failed_keys))
+        keys = sorted(
+            set(
+                key for key in frame.keys() if is_key_valid(key)
+            ).difference(self.failed_keys)
+        )
 
         extracted_data = {}
 
         for key in keys:
+            if key not in frame:
+                continue
+
             try:
                 value = frame[key]
             except Exception:
-                if auto_mode:
-                    self.failed_keys.add(key)
-                # else:
-                #    extracted_data[key] = None
+                self.failed_keys.add(key)
                 continue
 
             try:
