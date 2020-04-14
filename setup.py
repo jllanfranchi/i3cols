@@ -23,8 +23,8 @@ if sys.version_info < (3, 4):
     install_requires.append("enum34")
 
 setup(
-    name="i3cols-jllanfranchi",
-    version="0.1.2",
+    name="i3cols",
+    version="0.1.3",
     author="Justin L. Lanfranchi",
     author_email="jll1062@phys.psu.edu",
     description="Columnar storage for and operation on IceCube data",
