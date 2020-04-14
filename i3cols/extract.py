@@ -86,6 +86,8 @@ except ImportError:
     OSCNEXTKEYS = []
 
 # TODO: communicate a "quit NOW!" message to worker threads
+# TODO: use logging module
+# TODO: profile ... record time(s) to extract key name and times per type
 
 
 I3_FNAME_RE = re.compile(
@@ -269,6 +271,31 @@ def find_gcd_for_data_file(datafilename, gcd_dir, recurse=True):
     )
 
 
+def xlate_keys_arg(keys):
+    """Translate `keys` argument into a list of keys or None to be consumed by
+    functions in this module.
+
+    Legal values for `keys` are:
+
+        * str or singleton iterable containing a path to a "keys" file
+          (whitespace-separated key names)
+        * str or iterable thereof of key names
+        * None
+
+    """
+    if isinstance(keys, string_types):
+        keys = [keys]
+
+    if keys is not None:
+        keys = list(keys)
+        if len(keys) == 1 and os.path.isfile(expand(keys[0])):
+            with open(expand(keys[0]), "r") as fh:
+                txt = fh.read()
+            keys = [k for k in txt.strip().split() if k]
+
+    return keys
+
+
 def extract_files_separately(
     paths,
     outdir,
@@ -342,6 +369,8 @@ def extract_files_separately(
         Only extract at most the keys specified here (if some or all are
         missing for a frame, they are simply ignored). If None is provided,
         extract all keys that are possible to extract with `ConvertI3ToNumpy`.
+        If a single string (or singleton iterable) is provided that is a path
+        to a file, keys are read from the file (split by any whitespace).
 
     overwrite : bool, optional
         Currently this has to be True, but in the future `overwrite=False`
@@ -481,8 +510,7 @@ def extract_files_separately(
     if isinstance(sub_event_stream, string_types):
         sub_event_stream = [sub_event_stream]
 
-    if isinstance(keys, string_types):
-        keys = [keys]
+    keys = xlate_keys_arg(keys)
 
     if tempdir is not None:
         if not index_and_concatenate:
@@ -723,8 +751,7 @@ def extract_files_as_one(
     if isinstance(sub_event_stream, string_types):
         sub_event_stream = [sub_event_stream]
 
-    if isinstance(keys, string_types):
-        keys = [keys]
+    keys = xlate_keys_arg(keys)
 
     if keys is None:
         print("Extracting all keys in all files")
@@ -807,8 +834,7 @@ def extract_season(
     if tempdir is not None:
         tempdir = expand(tempdir)
 
-    if isinstance(keys, string_types):
-        keys = [keys]
+    keys = xlate_keys_arg(keys)
 
     if procs is None:
         procs = cpu_count()
@@ -1001,6 +1027,8 @@ def combine_runs(path, outdir, keys=None, mmap=True):
     path = expand(path)
     assert os.path.isdir(path), str(path)
     outdir = expand(outdir)
+
+    keys = xlate_keys_arg(keys)
 
     run_dirs = []
     for subname in sorted(os.listdir(path), key=nsort_key_func):
@@ -1300,11 +1328,11 @@ class ConvertI3ToNumpy(object):
         self.frame = frame
 
         auto_mode = False
+
+        keys = xlate_keys_arg(keys)
         if keys is None:
             auto_mode = True
             keys = frame.keys()
-        elif isinstance(keys, str):
-            keys = [keys]
         keys = sorted(set(keys).difference(self.failed_keys))
 
         extracted_data = {}
