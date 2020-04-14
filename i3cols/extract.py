@@ -436,12 +436,15 @@ def extract_files_separately(
     # index_and_concatenate, we will join as a subfolder of `outdir`; doing
     # join(outdir, "/absolute/path") yields "/absolute/path" which will write
     # to the source dir
-    fewest_path_elements = np.inf
+    fewest_path_elements = None
     split_sps = []
     for simplified_path in simplified_paths:
         split_path = simplified_path.split(os.path.sep)
         split_sps.append(split_path)
-        fewest_path_elements = min(fewest_path_elements, len(split_path))
+        if fewest_path_elements is None:
+            fewest_path_elements = len(split_path)
+        else:
+            fewest_path_elements = min(fewest_path_elements, len(split_path))
 
     # TODO: when we drop py2, py3 has os.path.commonpath!
     for n_parts_common in range(fewest_path_elements):
