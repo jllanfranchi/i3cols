@@ -64,6 +64,8 @@ from multiprocessing import Pool, cpu_count
 import os
 import re
 import shutil
+import sys
+import time
 
 import numpy as np
 from six import string_types
@@ -497,13 +499,18 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
 
 
 def _compress(dirpath, files, keep):
-    print('compressing "{}"'.format(dirpath))
+    t0 = time.time()
+
+    #sys.stdout.write('compressing "{}"...'.format(dirpath))
+    #sys.stdout.flush()
+
     array_d = OrderedDict()
     for array_name, array_fname in ARRAY_FNAMES.items():
         if array_fname in files:
             array_d[array_name] = np.load(os.path.join(dirpath, array_fname))
     if not array_d:
         return
+
     archivepath = os.path.join(dirpath.rstrip("/") + ".npz")
     np.savez_compressed(archivepath, **array_d)
     if not keep:
@@ -512,6 +519,9 @@ def _compress(dirpath, files, keep):
         except Exception as err:
             print("WARNING: unable to remove dir {}".format(dirpath))
             print(err)
+
+    sys.stdout.write('"{}"  {:.3f} s\n'.format(dirpath, time.time() - t0))
+    sys.stdout.flush()
 
 
 def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
@@ -613,9 +623,11 @@ def _decompress(dirpath, filename, keep):
     is_columnar_archive : bool
 
     """
-    key = filename[:-4]
+    t0 = time.time()
 
     filepath = os.path.join(dirpath, filename)
+
+    key = filename[:-4]
     keydirpath = os.path.join(dirpath, key)
     array_d = OrderedDict()
 
@@ -632,7 +644,9 @@ def _decompress(dirpath, filename, keep):
     finally:
         npz.close()
 
-    print('decompressing "{}"'.format(filepath))
+    #sys.stdout.write('decompressing "{}"...'.format(filepath))
+    #sys.stdout.flush()
+
     subfilepaths_created = []
     parent_dir_created = mkdir(keydirpath)
     try:
@@ -653,8 +667,12 @@ def _decompress(dirpath, filename, keep):
                 except Exception as err:
                     print(err)
         raise
+
     if not keep:
         os.remove(filepath)
+
+    sys.stdout.write('"{}"  {:.3f} s\n'.format(filepath, time.time() - t0))
+    sys.stdout.flush()
 
     return True
 
