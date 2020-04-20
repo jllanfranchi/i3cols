@@ -40,6 +40,9 @@ __all__ = [
     "dict2struct",
     "maptype2np",
     "get_widest_float_dtype",
+    "simplify_paths",
+    "get_i3_data_fname_info",
+    "test_get_i3_data_fname_info",
 ]
 
 
@@ -53,9 +56,12 @@ import errno
 from numbers import Integral, Number
 import os
 import re
+import sys
 
 import numpy as np
 from six import string_types
+
+from i3cols import regexes
 
 
 NSORT_RE = re.compile(r"(\d+)")
@@ -73,12 +79,9 @@ def nsort_key_func(s):
     ['f1.1.1.txt', 'f1.01.2.txt', 'f1.10.0.txt', 'f9.txt', 'f10.txt']
 
     """
-    spl = NSORT_RE.split(s)
-    key = []
-    for non_number, number in zip(spl[::2], spl[1::2]):
-        key.append(non_number)
-        key.append(int(number))
-    return key
+    return tuple(
+        val if i % 2 == 0 else int(val) for i, val in enumerate(NSORT_RE.split(s))
+    )
 
 
 def expand(p):
@@ -256,7 +259,7 @@ def maptype2np(mapping, dtype, to_numpy=True):
     defined by `dtype.names`.
 
     Use this function if you already know the `dtype` you want to end up with.
-    Use `retro.utils.misc.dict2struct` directly if you do not know the dtype(s)
+    Use `dict2struct` directly if you do not know the dtype(s)
     of the mapping's values ahead of time.
 
 
@@ -265,7 +268,7 @@ def maptype2np(mapping, dtype, to_numpy=True):
     mapping : mapping from strings to scalars
 
     dtype : numpy.dtype
-        If scalar dtype, convert via `utils.dict2struct`. If structured dtype,
+        If scalar dtype, convert via `dict2struct`. If structured dtype,
         convert keys specified by the struct field names and values are
         converted according to the corresponding type.
 
@@ -376,3 +379,325 @@ def fuse_arrays(arrays):
 #     elif isinstance(srcobj, Mapping):
 #         arrays = srcobj
 #         scalar_ci = None
+
+
+def simplify_paths(paths):
+    """Formulate enough of the path to disambiguate all files from one another,
+    and strip .i3 and any subsequent compression extension(s).
+
+    Parameters
+    ----------
+    paths : str or iterable thereof
+
+    Returns
+    -------
+    simplify_paths : list of str
+
+    """
+    simplified_paths = []
+    for path in paths:
+        head, tail = os.path.split(expand(path))
+        match = regexes.I3_FNAME_RE.match(tail)
+        if match:
+            groupdict = match.groupdict()
+            tail = groupdict["basename"]
+        simplified_paths.append(os.path.join(head, tail))
+
+    # Remove the common part, and make sure root dir isn't referenced (if not
+    # index_and_concatenate, we will join as a subfolder of `outdir`; doing
+    # join(outdir, "/absolute/path") yields "/absolute/path" which will write
+    # to the source dir
+    fewest_path_elements = None
+    split_sps = []
+    for simplified_path in simplified_paths:
+        split_path = simplified_path.split(os.path.sep)
+        split_sps.append(split_path)
+        if fewest_path_elements is None:
+            fewest_path_elements = len(split_path)
+        else:
+            fewest_path_elements = min(fewest_path_elements, len(split_path))
+
+    # TODO: when we drop py2, py3 has os.path.commonpath!
+    for n_parts_common in range(fewest_path_elements):
+        st = set(tuple(p[: n_parts_common + 1]) for p in split_sps)
+        if len(st) != 1:
+            break
+
+    return [os.path.sep.join(p[n_parts_common:]).lstrip("/") for p in split_sps]
+
+
+def get_i3_data_fname_info(path):
+    """Extract information about an IceCube data file from its filename, as
+    much as that is possible (and as much as the information varies across
+    convetions used with the collaboration).
+
+    Attempt to retrieve the following information:
+
+        * detector: (i.e., IC79 or IC86)
+        * season: (e.g., 11, 12, 2011, 2012, ...)
+        * level (processing level): (e.g. "2" for level 2)
+        * levelver (processing level version): (e.g., oscNext v01.04 is "01.04")
+        * pass: (e.g., "2" or "2a")
+        * part: (only seen in old files...?)
+        * run: (number prefixed by word "run"; seen in data but might be in MC)
+        * subrun: (number prfixed by word "subrun")
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    info : OrderedDict
+        Only keys present are those for which information was found.
+
+    """
+    path = os.path.basename(expand(path))
+
+    info = OrderedDict()
+    for regex in [
+        regexes.I3_FNAME_RE,
+        regexes.I3_DETECTOR_SEASON_RE,
+        regexes.I3_LEVEL_LEVELVER_RE,
+        regexes.I3_PASS_RE,
+        regexes.I3_RUN_RE,
+        regexes.I3_SUBRUN_RE,
+        regexes.I3_PART_RE,
+        regexes.I3_SUBRUN_RE,
+    ]:
+        match = regex.search(path)
+        if match:
+            info.update(match.groupdict())
+
+    # Remove items with None, all-whitespace, or empty-string values
+    for key, val in list(info.items()):
+        if val is None or not val.strip():
+            info.pop(key)
+
+    return info
+
+
+def test_get_i3_data_fname_info():
+    """Unit tests for I3_OSCNEXT_FNAME_RE."""
+    # pylint: disable=line-too-long
+
+    test_cases = [
+        (
+            "/tmp/i3/data/level7_v01.04/IC86.11/Run00118552/oscNext_data_IC86.11_level7_v01.04_pass2_Run00118552_Subrun00000009.i3.zst",
+            {
+                "basename": "",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "7",
+                "pass": "2",
+                "levelver": "01.04",
+                "run": "",
+                "part": "",
+                "season": "2011",
+                "subrun": "00000009",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2009/filtered/level1/0510/Level1_Run00113675_Part00000000.i3.gz",
+            {
+                "basename": "Level1_Run00113675_Part00000000",
+                "compr_exts": ".gz",
+                "detector": "",
+                "level": "1",
+                "pass": "",
+                "levelver": "",
+                "run": "00113675",
+                "part": "00000000",
+                "season": "",
+                "subrun": "",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2011/filtered/level2pass2/0703/Run00118401_1/Level2pass2_IC86.2011_data_Run00118401_Subrun00000000_00000184.i3.zst",
+            {
+                "basename": "Level2pass2_IC86.2011_data_Run00118401_Subrun00000000_00000184",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "2",
+                "levelver": "",
+                "run": "00118401",
+                "part": "",
+                "season": "2011",
+                "subrun": "00000000_00000184",  # TODO: ???
+            },
+        ),
+        (
+            "/data/exp/IceCube/2012/filtered/level2/0101/Level2_IC86.2011_data_Run00119221_Part00000001_SLOP.i3.bz2",
+            {
+                "basename": "Level2_IC86.2011_data_Run00119221_Part00000001_SLOP",
+                "compr_exts": ".bz2",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00119221",
+                "part": "00000001",
+                "season": "2011",
+                "subrun": "",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2013/filtered/level2pass2a/0417/Run00122201/Level2pass2_IC86.2012_data_Run00122201_Subrun00000000_00000138.i3.zst",
+            {
+                "basename": "Level2pass2_IC86.2012_data_Run00122201_Subrun00000000_00000138",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "2",
+                "levelver": "",
+                "run": "00122201",
+                "part": "",
+                "season": "2012",
+                "subrun": "00000000_00000138",  # ???
+            },
+        ),
+        (
+            "/data/exp/IceCube/2014/filtered/PFFilt/0316/PFFilt_PhysicsFiltering_Run00124369_Subrun00000000_00000134.tar.bz2",
+            {
+                "basename": "PFFilt_PhysicsFiltering_Run00124369_Subrun00000000_00000134",
+                "compr_exts": ".bz2",
+                "detector": "",
+                "level": "",
+                "pass": "",
+                "levelver": "",
+                "run": "00124369",
+                "part": "",
+                "season": "",
+                "subrun": "00000000_00000134",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2015/filtered/level2pass2/0903/Run00126809_3/Level2pass2_IC86.2015_data_Run00126809_Subrun00000000_00000114.i3.zst",
+            {
+                "basename": "Level2pass2_IC86.2015_data_Run00126809_Subrun00000000_00000114",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "2",
+                "levelver": "",
+                "run": "00126809",
+                "part": "",
+                "season": "2015",
+                "subrun": "00000000_00000114",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2016/filtered/NewWavedeform/L2/data.round3/Level2pass3/Run00127996/Level2pass3_PhysicsFiltering_Run00127996_Subrun00000000_00000139.i3.zst",
+            {
+                "basename": "Level2pass3_PhysicsFiltering_Run00127996_Subrun00000000_00000139",
+                "compr_exts": ".zst",
+                "detector": "",
+                "level": "2",
+                "pass": "3",
+                "levelver": "",
+                "run": "00127996",
+                "part": "",
+                "season": "",
+                "subrun": "00000000_00000139",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2017/filtered/level2/1231/Run00130473/Level2_IC86.2017_data_Run00130473_Subrun00000000_00000095_IT.i3.zst",
+            {
+                "basename": "Level2_IC86.2017_data_Run00130473_Subrun00000000_00000095_IT",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00130473",
+                "part": "",
+                "season": "2017",
+                "subrun": "00000000_00000095",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2018/filtered/level2/0121/Run00130574_70/Level2_IC86.2017_data_Run00130574_Subrun00000000_00000018.i3.zst",
+            {
+                "basename": "Level2_IC86.2017_data_Run00130574_Subrun00000000_00000018",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00130574",
+                "part": "",
+                "season": "2017",
+                "subrun": "00000000_00000018",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2019/filtered/level2.season2019_RHEL_6_py2-v3.1.1/0602/Run00132643/Level2_IC86.2019RHEL_6_py2-v3.1.1_data_Run00132643_Subrun00000000_00000052.i3.zst",
+            {
+                "basename": "Level2_IC86.2019RHEL_6_py2-v3.1.1_data_Run00132643_Subrun00000000_00000052",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00132643",
+                "part": "",
+                "season": "2019",
+                "subrun": "00000000_00000052",
+            },
+        ),
+        (
+            "/data/exp/IceCube/2020/filtered/level2/0306/Run00133807_78/Level2_IC86.2019_data_Run00133807_Subrun00000000_00000029.i3.zst",
+            {
+                "basename": "Level2_IC86.2019_data_Run00133807_Subrun00000000_00000029",
+                "compr_exts": ".zst",
+                "detector": "IC86",
+                "level": "2",
+                "pass": "",
+                "levelver": "",
+                "run": "00133807",
+                "part": "",
+                "season": "2019",
+                "subrun": "00000000_00000029",
+            },
+        ),
+    ]
+
+    for test_input, expected_output in test_cases:
+        try:
+            info = get_i3_data_fname_info(test_input)
+
+            expected_output = deepcopy(expected_output)
+            for k, v in list(expected_output.items()):
+                if not v:
+                    expected_output.pop(k)
+
+            ref_keys = set(expected_output.keys())
+            actual_keys = set(info.keys())
+            if actual_keys != ref_keys:
+                excess = actual_keys.difference(ref_keys)
+                missing = ref_keys.difference(actual_keys)
+                err_msg = []
+                if excess:
+                    err_msg.append("excess keys: " + str(sorted(excess)))
+                if missing:
+                    err_msg.append("missing keys: " + str(sorted(missing)))
+                if err_msg:
+                    raise ValueError("; ".join(err_msg))
+
+            err_msg = []
+            for key, ref_val in expected_output.items():
+                actual_val = info[key]
+                if actual_val != ref_val:
+                    err_msg.append(
+                        '"{key}": actual_val = "{actual_val}"'
+                        ' but ref_val = "{ref_val}"'.format(
+                            key=key, actual_val=actual_val, ref_val=ref_val
+                        )
+                    )
+            if err_msg:
+                raise ValueError("; ".join(err_msg))
+        except Exception:
+            sys.stderr.write('Failure on test input = "{}"\n'.format(test_input))
+            raise

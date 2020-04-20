@@ -60,10 +60,8 @@ import numba
 import numpy as np
 from six import string_types
 
-from i3cols.cols import check_outdir_and_keys, load, save_item
+from i3cols import cols, dtypes, utils
 from i3cols.enums import ParticleType
-import i3cols.dtypes as dt
-from i3cols.utils import expand, get_widest_float_dtype
 
 
 EM_CASCADE_PTYPES = (
@@ -155,7 +153,7 @@ NUTAUS = (ParticleType.NuTau, ParticleType.NuTauBar)
 NEUTRINOS = NUES + NUMUS + NUTAUS
 
 
-def calc_genie_weighted_aeff(path, outdtype=None, outdir=None, overwrite=False):
+def calc_genie_weighted_aeff(path, outdir, outdtype=None, overwrite=False):
     """Calculate weighted effective area in [GeV cm**2 sr] for GENIE events
     This EXCLUDES flux/osc, e.g. weight = weighted_aeff * flux * osc
 
@@ -174,9 +172,9 @@ def calc_genie_weighted_aeff(path, outdtype=None, outdir=None, overwrite=False):
 
     """
     outkey = "weighted_aeff"
-    outdir = check_outdir_and_keys(outdir, outkeys=[outkey], overwrite=overwrite)
+    outdir = cols.check_outdir_and_keys(outdir, outkeys=[outkey], overwrite=overwrite)
 
-    arrays, scalar_ci = load(path, keys=["I3MCWeightDict"], mmap=True)
+    arrays, scalar_ci = cols.load(path, keys=["I3MCWeightDict"], mmap=True)
 
     i3mcwd = arrays["I3MCWeightDict"]["data"]
     num_files = len(scalar_ci["subrun"])
@@ -200,7 +198,7 @@ def calc_genie_weighted_aeff(path, outdtype=None, outdir=None, overwrite=False):
     gen_ratio = i3mcwd["gen_ratio"]
 
     if outdtype is None:
-        outdtype = get_widest_float_dtype(
+        outdtype = utils.get_widest_float_dtype(
             dtypes=[x.dtype for x in [one_weight, n_events, gen_ratio]]
         )
 
@@ -209,7 +207,7 @@ def calc_genie_weighted_aeff(path, outdtype=None, outdir=None, overwrite=False):
     )
 
     if outdir is not None:
-        save_item(path=path, key=outkey, data=weighted_aeff, overwrite=overwrite)
+        cols.save_item(path=path, key=outkey, data=weighted_aeff, overwrite=overwrite)
 
     return weighted_aeff
 
@@ -254,8 +252,8 @@ def fit_genie_rw_syst(obj, outdtype=None, outdir=None, overwrite=False):
     #   up into larger blocks than per-event, or else multiprocessing overhead
     #   is too slow)
     if isinstance(obj, string_types):
-        obj = expand(obj)
-        arrays, _ = load(obj, keys="I3GENIEResultDict", mmap=True)
+        obj = utils.expand(obj)
+        arrays, _ = cols.load(obj, keys="I3GENIEResultDict", mmap=True)
         grd_array = arrays["I3GENIEResultDict"]["data"]
     elif isinstance(obj, Mapping):
         grd_array = obj["I3GENIEResultDict"]["data"]
@@ -263,19 +261,22 @@ def fit_genie_rw_syst(obj, outdtype=None, outdir=None, overwrite=False):
         grd_array = obj
 
     outkey = "GENIE_rw_syst_fit_coeffs"
-    outdir = check_outdir_and_keys(outdir, outkeys=outkey, overwrite=overwrite)
+    outdir = cols.check_outdir_and_keys(outdir, outkeys=outkey, overwrite=overwrite)
 
+    # GENIE reweighting systematics are prefixed by "rw_"
     rw_syst_names = sorted(n for n in grd_array.dtype.names if n.startswith("rw_"))
 
     if outdtype is None:
-        outdtype = get_widest_float_dtype(
+        outdtype = utils.get_widest_float_dtype(
             dtypes=[grd_array[n].dtype for n in rw_syst_names]
         )
 
-    # Only storing linear and quadratic fit coefficients
+    # Create a dtype to store individual systematic's fit coefficients; only
+    # keeping linear and quadratic fit coefficients
     coeff_t = np.dtype([("linear", outdtype), ("quadratic", outdtype)])
 
-    # Super-dtype used for output array composed of one coeff_t per systematic
+    # Super-dtype used for output is a single struct with fields named by
+    # each systematic's name and values are coeff_t.
     syst_fits_coeff_t = np.dtype([(n, coeff_t) for n in rw_syst_names])
 
     # x values used in all polynomial fits...
@@ -292,13 +293,18 @@ def fit_genie_rw_syst(obj, outdtype=None, outdir=None, overwrite=False):
     for rw_syst_name in rw_syst_names:
         in_yvalues = grd_array[rw_syst_name]
 
-        this_coeffs = fit_coeffs[rw_syst_name]
+        # Slice out just the fit coeffs for this systematic to make working
+        # with them easier
+        coeffs = fit_coeffs[rw_syst_name]
 
-        # Fit to all-1's: slope (linear) and curvature (quadratic) both = 0
-        all_ones_mask = np.all(in_yvalues == 1, axis=1)
-        this_coeffs[all_ones_mask] = 0
+        # Save time: If all y values are the same, slope (linear coeff) and
+        # curvature (quadratic coeff) are both 0. This is typically seen in MC
+        # as y values athat are all 1, but the following logic works regardless
+        # of the y value
+        all_equal_mask = np.equal.reduce(in_yvalues, axis=1)
+        coeffs[all_equal_mask] = 0
 
-        for idx in np.argwhere(~all_ones_mask).flat:
+        for idx in np.argwhere(~all_equal_mask).flat:
             in_y = in_yvalues[idx]
             inv_wght_i = 1 / grd_array[idx]["wght"]
             y = (
@@ -310,17 +316,18 @@ def fit_genie_rw_syst(obj, outdtype=None, outdir=None, overwrite=False):
             )
 
             # Note that np.polynomial.polynomial.polyfit returns the
-            # coefficients from low to high order (as opposed to np.polyfit)
+            # coefficients from low to high order (as opposed to np.polyfit).
+            # We do not keep the constant term of the fit. (TODO: WHY?)
             (
                 _,
-                this_coeffs[idx]["linear"],
-                this_coeffs[idx]["quadratic"],
+                coeffs[idx]["linear"],
+                coeffs[idx]["quadratic"],
             ) = np.polynomial.polynomial.polyfit(x, y, deg=2)
 
     # Save array to disk
 
     if outdir is not None:
-        save_item(path=outdir, key=outkey, data=fit_coeffs, overwrite=overwrite)
+        cols.save_item(path=outdir, key=outkey, data=fit_coeffs, overwrite=overwrite)
 
     return fit_coeffs
 
@@ -331,19 +338,21 @@ def calc_normed_weights(path, outdtype=None, outdir=None, overwrite=False):
 
     """
     outkey = "normed_weight"
-    outdir = check_outdir_and_keys(outdir=outdir, outkeys=[outkey], overwrite=overwrite)
+    outdir = cols.check_outdir_and_keys(
+        outdir=outdir, outkeys=[outkey], overwrite=overwrite
+    )
 
-    arrays, scalar_ci = load(path, keys=["I3MCWeightDict"], mmap=True)
+    arrays, scalar_ci = cols.load(path, keys=["I3MCWeightDict"], mmap=True)
     num_files = len(scalar_ci["subrun"])
     weight = arrays["I3MCWeightDict"]["data"]["weight"]
 
     if outdtype is None:
-        outdtype = get_widest_float_dtype(weight.dtype)
+        outdtype = utils.get_widest_float_dtype(weight.dtype)
 
     normed_weight = (weight / num_files).astype(outdtype)
 
     if outdir is not None:
-        save_item(path=outdir, key=outkey, data=normed_weight, overwrite=overwrite)
+        cols.save_item(path=outdir, key=outkey, data=normed_weight, overwrite=overwrite)
 
     return normed_weight
 
@@ -352,9 +361,11 @@ def get_nuflavint(path, outdtype=None, outdir=None, overwrite=False):
     """
     """
     outkey = "nuflavint"
-    outdir = check_outdir_and_keys(outdir=outdir, outkeys=[outkey], overwrite=overwrite)
+    outdir = cols.check_outdir_and_keys(
+        outdir=outdir, outkeys=[outkey], overwrite=overwrite
+    )
 
-    arrays, scalar_ci = load(path, keys=["I3MCTree", "I3MCWeightDict"], mmap=True)
+    arrays, scalar_ci = cols.load(path, keys=["I3MCTree", "I3MCWeightDict"], mmap=True)
     num_files = len(scalar_ci["subrun"])
     weight = arrays["I3MCWeightDict"]["data"]["weight"]
 
@@ -366,7 +377,7 @@ def get_nuflavint(path, outdtype=None, outdir=None, overwrite=False):
     normed_weight = (weight / num_files).astype(outdtype)
 
     if outdir is not None:
-        save_item(path=outdir, key=outkey, data=normed_weight, overwrite=overwrite)
+        cols.save_item(path=outdir, key=outkey, data=normed_weight, overwrite=overwrite)
 
     return normed_weight
 
@@ -406,9 +417,7 @@ def coszen_key_from_zen_key_path(key_path):
     return outkey
 
 
-def compute_coszen(
-    path, key_path, outkey=None, outdtype=None, outdir=None, overwrite=False
-):
+def compute_coszen(path, key_path, outdir, outkey=None, outdtype=None, overwrite=False):
     """Compute cosine of a zenith field.
 
     Parameters
@@ -424,6 +433,8 @@ def compute_coszen(
 
             arrays["L4_iLineFit"]["data"]["dir"]["zenith"]
 
+    outdir : str
+        Output key directory
     outkey : None or str, optional
         Name of key to save coszen values to; if None provided, will use
         `coszen_key_from_zen_key_path` function to derive a reasonable name based on
@@ -432,14 +443,8 @@ def compute_coszen(
         Data type to convert results to (_after_ applying `numpy.cos` to the
         input zenith values, regardless of what dtype those are). If not
         specified, defaults to the dtype of the input data
-    outdir : None or str, optional
-        Output key directory. If None is provided, no file is written
     overwrite : bool
         Whether to overwrite `outkey` in `outdir` if it alrady exists
-
-    Returns
-    -------
-    coszen : shape-(len(data),) numpy ndarray of dtype `outdtype`
 
     """
     # TODO: make generic not just to cos: numpy ufuncs can be fast & don't
@@ -453,9 +458,16 @@ def compute_coszen(
     if outkey is None:
         outkey = coszen_key_from_zen_key_path(key_path)
 
-    outdir = check_outdir_and_keys(outdir, outkeys=outkey, overwrite=overwrite)
+    outdir = utils.expand(outdir)
+    if not overwrite:
+        _, nothing_to_do = cols.augment_excludes_from_existing(
+            outdir=outdir, keys=outkey, exclude_keys=None
+        )
+        if nothing_to_do:
+            print("Column already exists in outdir")
+            return
 
-    arrays, _ = load(path, keys=key_path[0], mmap=True)
+    arrays, _ = cols.load(path, keys=key_path[0], mmap=True)
 
     data = arrays[key_path[0]]["data"]
 
@@ -463,20 +475,17 @@ def compute_coszen(
         data = data[key]
 
     if outdtype is None:
-        outdtype = get_widest_float_dtype(data.dtype)
+        outdtype = utils.get_widest_float_dtype(data.dtype)
 
     out = np.cos(data).astype(outdtype)
 
-    if outdir is not None:
-        save_item(path=outdir, key=outkey, data=out, overwrite=overwrite)
-
-    return out
+    cols.save_item(path=outdir, key=outkey, data=out, overwrite=overwrite)
 
 
 @numba.njit(fastmath=True, cache=True, error_model="numpy")
 def get_most_energetic_primary(flat_particles, class_abs_pdg_codes):
     """Get most energetic primary particle, filtered by specific PDG codes"""
-    most_energetic_primary = np.empty(shape=1, dtype=dt.I3PARTICLE_T)[0]
+    most_energetic_primary = np.empty(shape=1, dtype=dtypes.I3PARTICLE_T)[0]
     most_energetic_primary["energy"] = -np.inf
 
     for flat_particle in flat_particles:

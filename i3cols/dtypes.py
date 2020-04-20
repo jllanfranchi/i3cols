@@ -353,7 +353,7 @@ I3EVENTHEADER_T = np.dtype(
         ("end_time", I3TIME_T),
     ]
 )
-"""See: dataclasses/public/dataclasses/physics/I3EventHeader.h"""
+"""dataclasses/public/dataclasses/physics/I3EventHeader.h"""
 
 
 I3RUSAGE_T = np.dtype(

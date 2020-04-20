@@ -37,13 +37,14 @@ __all__ = [
     "load",
     "save_item",
     "check_outdir_and_keys",
+    "filter_keys_from_existing",
     "get_valid_key_func",
     "find_array_paths",
     "load_contained_paths",
     "compress",
     "decompress",
     "construct_arrays",
-    "index_and_concatenate_arrays",
+    "concatenate_and_index_cols",
 ]
 
 
@@ -59,8 +60,11 @@ try:
 except ImportError:
     from collections import Mapping, MutableMapping, MutableSequence, Sequence
 from copy import deepcopy
+from enum import IntEnum
 import fnmatch
-from multiprocessing import Pool, cpu_count
+import functools
+from multiprocessing import Pool
+import operator
 import os
 import re
 import shutil
@@ -71,6 +75,7 @@ import numpy as np
 from six import string_types
 
 from i3cols import dtypes as dt
+from i3cols import regexes
 from i3cols.utils import expand, mkdir, nsort_key_func
 
 
@@ -89,7 +94,7 @@ from i3cols.utils import expand, mkdir, nsort_key_func
 #   output is different from what exists)
 
 
-CATEGORY_INDEX_POSTFIX = "__scalar_index.npy"
+CATEGORY_INDEX_POSTFIX = "__categ_index"
 """Category scalar index files are named {category}{CATEGORY_INDEX_POSTFIX}"""
 
 LEGAL_ARRAY_NAMES = ("data", "index", "valid")
@@ -100,7 +105,15 @@ ARRAY_FNAMES = {n: "{}.npy".format(n) for n in LEGAL_ARRAY_NAMES}
 """Basic npy filenames associated with each legal (recoginzed) array"""
 
 
-def load(path, keys=None, mmap=True):
+class MatchSpecialCase(IntEnum):
+    """Special cases for `keys` and `exclude_keys` matching keys"""
+
+    UNKNOWN = -1
+    MATCH_NOTHING = 0
+    MATCH_EVERYTHING = 1
+
+
+def load(path, keys=None, exclude_keys=None, mmap=True):
     """Find and load arrays within `path`.
 
     Parameters
@@ -115,7 +128,9 @@ def load(path, keys=None, mmap=True):
     category_indexes
 
     """
-    arrays, category_indexes = find_array_paths(path, keys=keys)
+    arrays, category_indexes = find_array_paths(
+        path=path, keys=keys, exclude_keys=exclude_keys
+    )
     load_contained_paths(arrays, inplace=True, mmap=mmap)
     load_contained_paths(category_indexes, inplace=True, mmap=mmap)
     return arrays, category_indexes
@@ -138,18 +153,27 @@ def save_item(path, key, data, valid=None, index=None, overwrite=False):
     path = expand(path)
     if os.path.exists(path):
         assert os.path.isdir(path)
+        if not overwrite:
+            existing_cols, _ = find_array_paths(path, keys=key)
+            if existing_cols:
+                raise IOError(
+                    'Key {} already exists at path(s) "{}"'.format(
+                        key, existing_cols[key]
+                    )
+                )
 
     outdirpath = os.path.join(path, key)
 
     outfpaths_saved = []
     parent_outdir_created = mkdir(outdirpath)
     try:
+        outfpaths_arrays = []
         for name, array in [("data", data), ("valid", valid), ("index", index)]:
             if array is None:
                 continue
             outfpath = os.path.join(outdirpath, name + ".npy")
-            if not overwrite and os.path.isfile(outfpath):
-                raise IOError('file exists at "{}"'.format(outfpath))
+            outfpaths_arrays.append((outfpath, array))
+        for outfpath, array in outfpaths_arrays:
             np.save(outfpath, array)
             outfpaths_saved.append(outfpath)
     except:
@@ -185,29 +209,226 @@ def check_outdir_and_keys(outdir=None, outkeys=None, overwrite=False):
     return outdir
 
 
-def get_valid_key_func(keys):
-    """Translate `keys` argument into a list of keys or None to be consumed by
-    functions in this module.
-
+def filter_keys_from_existing(outdir, keys=None, exclude_keys=None):
+    """Augment `exclude_keys` with existing arrays in an output directory to
+    avoid overwriting those arrays.
 
     Parameters
     ----------
-    keys : str, iterable thereof, None, or callable
-        If `keys` is:
-            * A string or singleton string (i.e., an iterable or sequence
-              containing a single string) which represents a path to a file, it
-              is interpreted as a "keys" file. Keys file must contain
-              whitespace-separated key names; do NOT use single- or
-              double-quotation marks in the file.
-            * A string or iterable thereof of key names, including optional
-              glob patterns See Python's `fnmatch` module for more description,
-              but legal Glob patterns are "?" for any single character, "*" for
-              any number of any character, and "[abfg]" to match specific
-              characters, in this case one of "a", "b", "f", or "g".
-            * None matches any key (same as specifying "*")
-            * A callable is assumed to be a `is_key_valid` function; this is
-              simply returned
+    outdir : str
+    keys, exclude_keys
 
+    Returns
+    -------
+    exclude_keys
+    nothing_to_do : bool
+
+    """
+    outdir = expand(outdir)
+    if os.path.isdir(outdir):
+        existing_cols, _ = find_array_paths(
+            path=outdir, keys=keys, exclude_keys=exclude_keys
+        )
+
+        new_exclude_keys = list(existing_cols.keys())
+
+        if new_exclude_keys:
+            if exclude_keys is None:
+                exclude_keys = new_exclude_keys
+            elif isinstance(exclude_keys, string_types) or callable(exclude_keys):
+                exclude_keys = [exclude_keys] + new_exclude_keys
+            else:
+                exclude_keys += new_exclude_keys
+
+    valid_info, invalid_info = expand_keys(keys=keys, exclude_keys=exclude_keys)
+
+    nothing_to_do = (
+        valid_info["match_special"] == MatchSpecialCase.MATCH_NOTHING
+        or invalid_info["match_special"] == MatchSpecialCase.MATCH_EVERYTHING
+    )
+
+    updated_keys = sorted(
+        functools.reduce(
+            operator.add,
+            (list(s) for k, s in valid_info.items() if k != "match_special"),
+        )
+    )
+
+    updated_exclude_keys = sorted(
+        functools.reduce(
+            operator.add,
+            (list(s) for k, s in invalid_info.items() if k != "match_special"),
+        )
+    )
+
+    # print("updated_keys:\n{}\n".format(updated_keys))
+    # print("updated_exclude_keys:\n{}\n".format(updated_exclude_keys))
+
+    return nothing_to_do, updated_keys, updated_exclude_keys
+
+
+def _is_key_match_protofunc(key, key_funcs, named_keys, rgxs):
+    """If any match criterion is met, return True; if NO match
+    criterion is met, return False."""
+    for func in key_funcs:
+        if func(key):
+            return True
+    if key in named_keys:
+        return True
+    for rgx in rgxs:
+        if rgx.match(key):
+            return True
+    return False
+
+
+def _generate_key_match_function(info):
+    return functools.partial(
+        _is_key_match_protofunc,
+        key_funcs=tuple(f for f in info["key_funcs"]),
+        named_keys=deepcopy(info["named_keys"]),
+        rgxs=tuple(
+            re.compile(fnmatch.translate(pattern), flags=re.IGNORECASE)
+            for pattern in sorted(info["glob_patterns"])
+        ),
+    )
+
+
+def expand_keys(keys, exclude_keys):
+    """
+    Parameters
+    ----------
+    keys
+    exclude_keys
+
+    Returns
+    -------
+    valid_info, invalid_info : dict
+
+    """
+    infos = {}
+    for is_valid_logic, keys_spec in [(True, keys), (False, exclude_keys)]:
+        info = infos[is_valid_logic] = dict(
+            match_special=MatchSpecialCase.UNKNOWN,
+            named_keys=set(),
+            glob_patterns=set(),
+            key_funcs=set(),
+        )
+
+        set_names = [name for name in info if name != "match_special"]
+
+        if keys_spec is None:
+            if is_valid_logic:
+                info["match_special"] = MatchSpecialCase.MATCH_EVERYTHING
+            else:
+                info["match_special"] = MatchSpecialCase.MATCH_NOTHING
+            for set_name in set_names:
+                info[set_name].clear()
+            continue
+
+        # Make isolated string or callable into a singleton list so we
+        # can handle the same way as everything else
+        if isinstance(keys_spec, string_types) or callable(keys_spec):
+            keys_spec = [keys_spec]
+
+        # Make any iterable into a (mutable) set
+        keys_spec = set(keys_spec)
+
+        files_read = set()
+
+        while keys_spec:
+            key = keys_spec.pop()
+
+            if callable(key):
+                info["key_funcs"].add(key)
+
+            # All other cases: key must be a string
+
+            elif os.path.isfile(expand(key)):
+                abspath = expand(key)
+                if abspath in files_read:
+                    continue
+                files_read.add(abspath)
+                with open(abspath, "r") as fh:
+                    txt = fh.read()
+                keys_spec.update(k.strip() for k in txt.strip().split("\n") if k)
+
+            elif key.strip() == "*":
+                info["match_special"] = MatchSpecialCase.MATCH_EVERYTHING
+                for set_name in set_names:
+                    info[set_name].clear()
+                break
+
+            elif "*" in key or "?" in key or ("[" in key and "]" in key):
+                info["glob_patterns"].add(key)
+
+            else:
+                info["named_keys"].add(key)
+
+    valid_info = infos.pop(True)
+    invalid_info = infos.pop(False)
+
+    # Simplify
+
+    for info in [valid_info, invalid_info]:
+        if info["match_special"] != MatchSpecialCase.MATCH_EVERYTHING and all(
+            len(info[set_name]) == 0 for set_name in set_names
+        ):
+            info["match_special"] = MatchSpecialCase.MATCH_NOTHING
+
+    # Filter valid_info based on invalid_info...
+
+    # If everything is invalid: clear out valid_info & make it match nothing
+    if invalid_info["match_special"] == MatchSpecialCase.MATCH_EVERYTHING:
+        valid_info["match_special"] = MatchSpecialCase.MATCH_NOTHING
+        for set_name in set_names:
+            valid_info[set_name].clear()
+
+    # If some things are invalid: clear out valid_info keys that meet an
+    # invalid_info criterion
+    elif invalid_info["match_special"] != MatchSpecialCase.MATCH_NOTHING:
+        # Modifying named_keys, so wrap set being iterated over in list()
+        for key in list(valid_info["named_keys"]):
+            if (
+                key in invalid_info["named_keys"]
+                or any(
+                    re.match(fnmatch.translate(pattern), key, flags=re.IGNORECASE)
+                    for pattern in invalid_info["glob_patterns"]
+                )
+                or any(func(key) for func in invalid_info["key_funcs"])
+            ):
+                valid_info["named_keys"].remove(key)
+
+        # Check if we emptied the valid_info
+        if valid_info["match_special"] != MatchSpecialCase.MATCH_EVERYTHING and all(
+            len(info[set_name]) == 0 for set_name in set_names
+        ):
+            info["match_special"] = MatchSpecialCase.MATCH_NOTHING
+            for set_name in set_names:
+                info[set_name].clear()
+
+    return valid_info, invalid_info
+
+
+def get_valid_key_func(keys=None, exclude_keys=None):
+    r"""Turn `keys` and `exclude_keys` into a function to validate key names.
+
+    Parameters
+    ----------
+    keys, exclude_keys : str or callable, iterable thereof, or None; optional
+        If `keys` is:
+            * A string which represents a path to a file, it
+              is interpreted as a keys file. This file must contain
+              "\n"-separated key names; do NOT use single- or double-quotation
+              marks in the file to surround key names.
+            * A string or iterable thereof of key names, including optional
+              glob patterns. See Python's `fnmatch` module for more
+              description, but legal Glob patterns are "?" for any single
+              character, "*" for any number of any character, and "[abf]" to
+              match specific characters, in this case one of "a", "b", or "f".
+            * A callable is assumed to take a single string (key name) as its
+              argument and return either True or False.
+            * `keys=None` matches all keys while `exclude_keys=None` matches
+              _no_ keys
 
     Returns
     -------
@@ -217,62 +438,68 @@ def get_valid_key_func(keys):
             is_valid = is_key_valid(key)
 
     """
-    if callable(keys):
-        return keys
+    valid_info, invalid_info = expand_keys(keys, exclude_keys)
 
-    if keys is None:
-        return lambda x: True
+    # No keys are valid cases
 
-    if isinstance(keys, string_types):
-        keys = [keys]
-    keys = list(keys)
+    if (
+        valid_info["match_special"] == MatchSpecialCase.MATCH_NOTHING
+        or invalid_info["match_special"] == MatchSpecialCase.MATCH_EVERYTHING
+    ):
+        return lambda key: False
 
-    if len(keys) == 1 and os.path.isfile(expand(keys[0])):
-        with open(expand(keys[0]), "r") as fh:
-            txt = fh.read()
-        keys = [k.strip() for k in txt.strip().split() if k]
+    # Define non-trivial functions
 
-    glob_patterns = set()
-    named_keys = set()
-    for key in keys:
-        if key == "*":
-            keys = None
-            break
-        if "*" in key or "?" in key or ("[" in key and "]" in key):
-            glob_patterns.add(key)
-        else:
-            named_keys.add(key)
+    if valid_info["match_special"] == MatchSpecialCase.UNKNOWN:
+        valid_func = _generate_key_match_function(valid_info)
+    else:  # valid_info["match_special"] == MatchSpecialCase.MATCH_EVERYTHING
+        # No point in specifying a function that always returns True
+        valid_func = None
 
-    regexes = [
-        re.compile(fnmatch.translate(p), flags=re.IGNORECASE)
-        for p in sorted(glob_patterns)
-    ]
+    if invalid_info["match_special"] == MatchSpecialCase.UNKNOWN:
+        invalid_func = _generate_key_match_function(invalid_info)
+    else:  # invalid_info["match_special"] == MatchSpecialCase.MATCH_NOTHING
+        # No point in specifying: `not func(key)` is always True
+        invalid_func = None
 
-    def is_key_valid(key):
-        if key in named_keys:
-            return True
-        for regex in regexes:
-            if regex.match(key):
-                return True
-        return False
+    # Define final `is_key_valid` function, composing the above as necessary
+
+    if valid_func is not None and invalid_func is not None:
+        is_key_valid = lambda key: valid_func(key) and not invalid_func(key)
+
+    elif valid_func is not None and invalid_func is None:
+        is_key_valid = valid_func
+
+    elif valid_func is None and invalid_func is not None:
+        is_key_valid = lambda key: not invalid_func(key)
+
+    else:  # is_valid is None and is_invalid is None:
+        is_key_valid = lambda key: True
 
     return is_key_valid
 
 
-def find_array_paths(path, keys=None):
-    """
+def find_array_paths(path, keys=None, exclude_keys=None):
+    """Find arrays and category indexes.
+
     Parameters
     ----------
     path : str
-        Path to directory containing columnar array "keys" (directories like
-        "I3EventHeader" or numpy zip archives like "I3EventHeader.npz") and
-        possibly category scalar indices ("<category>__scalar_index.npy" files)
+        Path to a
 
-    keys : str, iterable thereof, or None; optional
-        Only retrieve the subset of `keys` that are present in `path`; find all
-        if `keys` is None. Glob-style matching (any char "?", any number of
-        chars "*", and one of chars "[abc]") is supported and matches
-        are _case-insensitive_.
+            * single column directory (e.g. I3EventHeader, which contains files
+                data.npy, etc.)
+            * single column .npz archive (e.g. I3EventHeader.npz, which
+                contains arrays "data", etc.)
+            * column directory containing one or more of the above
+
+    keys, exclude_keys : str or callable, iterable thereof, or None; optional
+        See `get_valid_key_func` for acceptable values and what they translate
+        to. For a key to be extracted, it must meet the criteria of `keys` AND
+        NOT match the criteria of `exclude_keys`, with the special values that
+        `keys=None` matches _everything_ while `exclude_keys=None` matches
+        _nothing_. Keys within a frame not meething these criteria are simply
+        ignored.
 
     Returns
     -------
@@ -280,22 +507,43 @@ def find_array_paths(path, keys=None):
     category_indexes
 
     """
-    path = expand(path)
-    assert os.path.isdir(path), str(path)
+    orig_path = path
+    path = expand(orig_path)
 
-    is_key_valid = get_valid_key_func(keys)
+    is_key_valid = get_valid_key_func(keys=keys, exclude_keys=exclude_keys)
 
     arrays = OrderedDict()
     category_indexes = OrderedDict()
-
     unrecognized = []
 
-    for name in sorted(os.listdir(path), key=nsort_key_func):
+    cat_idx_plus_ext = CATEGORY_INDEX_POSTFIX + ".npy"
+
+    if os.path.isfile(path):
+        match = regexes.KEY_NAME_RE.match(os.path.basename(path))
+        if not match:
+            raise ValueError(
+                'Path unrecognizable as a i3cols key name: "{}"'.format(orig_path)
+            )
+
+        key_name = match.groupdict()["key_name"]
+        if not is_key_valid(key_name):
+            return arrays, category_indexes
+
+        # Code below handles directories, so pass the directory this file sits
+        # in but specify to only select this key. This allows re-use of the
+        # code that finds category indexes
+
+        path = os.path.dirname(path)
+        is_key_valid = get_valid_key_func(keys=key_name)
+
+    dir_listing = sorted(os.listdir(path), key=nsort_key_func)
+
+    for name in dir_listing:
         subpath = os.path.join(path, name)
 
         if os.path.isfile(subpath):
-            if name.endswith(CATEGORY_INDEX_POSTFIX):
-                category = name[: -len(CATEGORY_INDEX_POSTFIX)]
+            if name.endswith(cat_idx_plus_ext):
+                category = name[: -len(cat_idx_plus_ext)]
                 category_indexes[category] = subpath
                 continue
 
@@ -433,7 +681,7 @@ def load_contained_paths(obj, inplace=False, mmap=False):
     return obj
 
 
-def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
+def compress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, procs=1):
     """Compress any key directories found in any path in `paths` (including
     path itself, if it is a key directory) using Numpy's `savez_compressed` to
     produce "{key}.npz" files.
@@ -450,7 +698,7 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
     keep : bool, optional
         Keep the original key directory even after successfully compressing it
 
-    procs : int, optional
+    procs : int >= 1, optional
 
     """
     if isinstance(paths, string_types):
@@ -459,7 +707,7 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
     for path in paths:
         assert os.path.isdir(path), path
 
-    is_key_valid = get_valid_key_func(keys)
+    is_key_valid = get_valid_key_func(keys=keys, exclude_keys=exclude_keys)
 
     pool = None
     if procs > 1:
@@ -501,8 +749,8 @@ def compress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
 def _compress(dirpath, files, keep):
     t0 = time.time()
 
-    #sys.stdout.write('compressing "{}"...'.format(dirpath))
-    #sys.stdout.flush()
+    # sys.stdout.write('compressing "{}"...'.format(dirpath))
+    # sys.stdout.flush()
 
     array_d = OrderedDict()
     for array_name, array_fname in ARRAY_FNAMES.items():
@@ -524,11 +772,10 @@ def _compress(dirpath, files, keep):
     sys.stdout.flush()
 
 
-def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
+def decompress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, procs=1):
     """Decompress any key archive files (end in .npz and contain "data" and
     possibly other arrays) found within `path` (including `path`, if it is a
     key archive).
-
 
     Parameters
     ----------
@@ -544,14 +791,14 @@ def decompress(paths, keys=None, recurse=True, keep=False, procs=cpu_count()):
     keep : bool, optional
         Keep the original key directory even after successfully compressing it
 
-    procs
+    procs : int >= 1, optional
 
     """
     if isinstance(paths, string_types):
         paths = [paths]
     paths = [expand(p) for p in paths]
 
-    is_key_valid = get_valid_key_func(keys)
+    is_key_valid = get_valid_key_func(keys=keys, exclude_keys=exclude_keys)
 
     pool = None
     if procs > 1:
@@ -644,8 +891,8 @@ def _decompress(dirpath, filename, keep):
     finally:
         npz.close()
 
-    #sys.stdout.write('decompressing "{}"...'.format(filepath))
-    #sys.stdout.flush()
+    # sys.stdout.write('decompressing "{}"...'.format(filepath))
+    # sys.stdout.flush()
 
     subfilepaths_created = []
     parent_dir_created = mkdir(keydirpath)
@@ -845,7 +1092,13 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
     return arrays_paths
 
 
-def index_and_concatenate_arrays(
+def concatenate(paths, outdir, keys=None, index="simplified_path", mmap=True):
+    if isinstance(paths, string_types):
+        paths = [paths]
+    paths = [expand(path) for path in paths]
+
+
+def concatenate_and_index_cols(
     category_array_map,
     existing_category_indexes=None,
     index_name=None,
@@ -854,7 +1107,6 @@ def index_and_concatenate_arrays(
     mmap=True,
 ):
     """A given scalar array might or might not be present in each tup
-
 
     Parameters
     ----------
@@ -880,7 +1132,6 @@ def index_and_concatenate_arrays(
     outdir : str or None, optional
         If specified, category index and arrays are written to disk within this
         directory
-
 
     Returns
     -------
@@ -916,13 +1167,13 @@ def index_and_concatenate_arrays(
 
         # All scalar data arrays and vector index arrays in one category must have
         # same length as one another; record this length for each category
-        category_scalar_array_lengths = OrderedDict()
+        category_scalar_array_lens = OrderedDict()
 
         # scalar data, scalar valid, and vector index arrays will have this length
-        total_scalar_length = 0
+        total_scalar_len = 0
 
         # vector data has different total length for each item
-        total_vector_lengths = OrderedDict()
+        total_vector_lens = OrderedDict()
 
         # Record any keys that, for any category, already have a valid array
         # created, as these keys will require valid arrays to be created and
@@ -935,7 +1186,7 @@ def index_and_concatenate_arrays(
         # Get and validate metadata about arrays
 
         for n, (category, array_dicts) in enumerate(category_array_map.items()):
-            scalar_array_length = None
+            scalar_array_len = None
             for key, array_d in array_dicts.items():
                 array_d = load_contained_paths(array_d, **load_contained_paths_kw)
 
@@ -945,38 +1196,36 @@ def index_and_concatenate_arrays(
 
                 is_scalar = index is None
 
-                if scalar_array_length is None:
+                if scalar_array_len is None:
                     if is_scalar:
-                        scalar_array_length = len(data)
+                        scalar_array_len = len(data)
                     else:
-                        scalar_array_length = len(index)
-                elif is_scalar and len(data) != scalar_array_length:
+                        scalar_array_len = len(index)
+                elif is_scalar and len(data) != scalar_array_len:
                     raise ValueError(
                         "category={}, key={}, ref len={}, this len={}".format(
-                            category, key, scalar_array_length, len(data)
+                            category, key, scalar_array_len, len(data)
                         )
                     )
 
                 if valid is not None:
                     keys_with_valid_arrays.add(key)
 
-                    if len(valid) != scalar_array_length:
+                    if len(valid) != scalar_array_len:
                         raise ValueError(
                             "category={}, key={}, ref len={}, this len={}".format(
-                                category, key, scalar_array_length, len(valid)
+                                category, key, scalar_array_len, len(valid)
                             )
                         )
 
                 if index is not None:
                     vector_keys.add(key)
-                    if key not in total_vector_lengths:
-                        total_vector_lengths[key] = 0
-                    total_vector_lengths[key] += len(data)
+                    total_vector_lens[key] = total_vector_lens.get(key, 0) + len(data)
 
-                    if len(index) != scalar_array_length:
+                    if len(index) != scalar_array_len:
                         raise ValueError(
                             "category={}, key={}, ref len={}, this len={}".format(
-                                category, key, scalar_array_length, len(index)
+                                category, key, scalar_array_len, len(index)
                             )
                         )
 
@@ -991,15 +1240,15 @@ def index_and_concatenate_arrays(
                         )
                     )
 
-            if scalar_array_length is None:
-                scalar_array_length = 0
+            if scalar_array_len is None:
+                scalar_array_len = 0
 
-            category_scalar_array_lengths[category] = scalar_array_length
-            total_scalar_length += scalar_array_length
+            category_scalar_array_lens[category] = scalar_array_len
+            total_scalar_len += scalar_array_len
             print(
                 "category {}, {}={}: scalar array len={},"
                 " total scalar array len={}".format(
-                    n, index_name, category, scalar_array_length, total_scalar_length
+                    n, index_name, category, scalar_array_len, total_scalar_len
                 )
             )
 
@@ -1016,7 +1265,7 @@ def index_and_concatenate_arrays(
         )
         if outdir is not None:
             category_index = np.lib.format.open_memmap(
-                os.path.join(outdir, index_name + CATEGORY_INDEX_POSTFIX),
+                os.path.join(outdir, index_name + CATEGORY_INDEX_POSTFIX + ".npy"),
                 mode="w+",
                 shape=(len(categories),),
                 dtype=category_index_dtype,
@@ -1029,10 +1278,10 @@ def index_and_concatenate_arrays(
         # Populate the category index
 
         start = 0
-        for i, (category, array_length) in enumerate(
-            zip(categories, category_scalar_array_lengths.values())
+        for i, (category, array_len) in enumerate(
+            zip(categories, category_scalar_array_lens.values())
         ):
-            stop = start + array_length
+            stop = start + array_len
             value = np.array([(start, stop)], dtype=dt.START_STOP_T)[0]
             category_index[i] = (category, value)
             start = stop
@@ -1057,9 +1306,9 @@ def index_and_concatenate_arrays(
         concatenated_arrays = OrderedDict()
         for key, dtype in key_dtypes.items():
             if key in vector_keys:
-                data_length = total_vector_lengths[key]
+                data_len = total_vector_lens[key]
             else:
-                data_length = total_scalar_length
+                data_len = total_scalar_len
 
             # Create big data array
 
@@ -1069,11 +1318,11 @@ def index_and_concatenate_arrays(
                 data = np.lib.format.open_memmap(
                     os.path.join(dpath, "data.npy"),
                     mode="w+",
-                    shape=(data_length,),
+                    shape=(data_len,),
                     dtype=dtype,
                 )
             else:
-                data = np.empty(shape=(data_length,), dtype=dtype)
+                data = np.empty(shape=(data_len,), dtype=dtype)
 
             # Create big valid array if needed
 
@@ -1085,11 +1334,11 @@ def index_and_concatenate_arrays(
                     valid = np.lib.format.open_memmap(
                         os.path.join(dpath, "valid.npy"),
                         mode="w+",
-                        shape=(total_scalar_length,),
+                        shape=(total_scalar_len,),
                         dtype=np.bool8,
                     )
                 else:
-                    valid = np.empty(shape=(total_scalar_length,), dtype=np.bool8)
+                    valid = np.empty(shape=(total_scalar_len,), dtype=np.bool8)
 
             # Create big index array if vector data
 
@@ -1101,11 +1350,11 @@ def index_and_concatenate_arrays(
                     index = np.lib.format.open_memmap(
                         os.path.join(dpath, "index.npy"),
                         mode="w+",
-                        shape=(total_scalar_length,),
+                        shape=(total_scalar_len,),
                         dtype=dt.START_STOP_T,
                     )
                 else:
-                    index = np.empty(shape=(total_scalar_length,), dtype=np.bool8)
+                    index = np.empty(shape=(total_scalar_len,), dtype=np.bool8)
 
             # Fill chunks of the big arrays from each category
 
