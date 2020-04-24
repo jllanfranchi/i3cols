@@ -1385,14 +1385,17 @@ def concatenate_and_index_cols(
                         index_["start"] += vector_start
                         index_["stop"] += vector_start
                     index[scalar_start:scalar_stop] = index_
+                    del index_
 
                     data[vector_start:vector_stop] = data_
 
                     vector_start = vector_stop
+                del data_
 
                 valid_ = key_arrays.get("valid", None)
                 if valid_ is not None:
                     valid[scalar_start:scalar_stop] = valid_
+                    del valid_
                 elif valid is not None:
                     valid[scalar_start:scalar_stop] = True
 
