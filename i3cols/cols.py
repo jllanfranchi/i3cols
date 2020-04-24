@@ -48,7 +48,7 @@ __all__ = [
 ]
 
 
-from collections import OrderedDict
+from collections import defaultdict, OrderedDict
 
 try:
     from collections.abc import (
@@ -1172,8 +1172,9 @@ def concatenate_and_index_cols(
         # scalar data, scalar valid, and vector index arrays will have this length
         total_scalar_len = 0
 
-        # vector data has different total length for each item
-        total_vector_lens = OrderedDict()
+        # vector data has different total length for each item; make a counter
+        # for these using defaultdict
+        total_vector_lens = defaultdict(int)
 
         # Record any keys that, for any category, already have a valid array
         # created, as these keys will require valid arrays to be created and
@@ -1220,7 +1221,7 @@ def concatenate_and_index_cols(
 
                 if index is not None:
                     vector_keys.add(key)
-                    total_vector_lens[key] = total_vector_lens.get(key, 0) + len(data)
+                    total_vector_lens[key] += len(data)
 
                     if len(index) != scalar_array_len:
                         raise ValueError(
