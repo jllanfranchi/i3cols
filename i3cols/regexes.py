@@ -44,6 +44,7 @@ __all__ = [
     "I3_SUBRUN_DIR_RE",
     "I3_RUN_DIR_RE",
     "IC_SEASON_DIR_RE",
+    "I3_OSCNEXT_ROOTFNAME_RE",
     "I3_OSCNEXT_FNAME_RE",
     "test_OSCNEXT_I3_FNAME_RE",
 ]
@@ -92,6 +93,26 @@ IC_SEASON_DIR_RE = re.compile(
     flags=re.IGNORECASE,
 )
 """Matches data season dirs, e.g. 'IC86.11' or 'IC86.2011'"""
+
+I3_OSCNEXT_ROOTFNAME_RE = re.compile(
+    r"""
+    (?P<basename>oscNext_(?P<kind>\S+?)
+        (_IC86\.(?P<season>[0-9]+))?       #  only present for data
+        _level(?P<level>[0-9]+)
+        .*?                                #  other infixes, e.g. "addvars"
+        _v(?P<levelver>[0-9.]+)
+        _pass(?P<pass>[0-9]+)
+        (_Run|\.)(?P<run>[0-9]+)           # data run pfxd by "_Run", MC by "."
+        ((_Subrun|\.)(?P<subrun>[0-9]+))?  # data subrun pfxd by "_Subrun", MC by "."
+    )
+    (?P<i3ext>\.i3)?
+    (?P<compr_exts>(\..*)*)
+    """,
+    flags=re.IGNORECASE | re.VERBOSE,
+)
+"""Allows for missing .i3 filename extesion, e.g. when files are extracted to
+directories of same name as the source file but without an extension"""
+
 
 I3_OSCNEXT_FNAME_RE = re.compile(
     r"""

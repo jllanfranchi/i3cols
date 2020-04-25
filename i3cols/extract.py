@@ -110,7 +110,7 @@ def i3_run_category_xform(path):
     normbasename = os.path.basename(utils.expand(path))
     match = regexes.I3_RUN_RE.search(normbasename)
     if not match:
-        match = regexes.I3_OSCNEXT_FNAME_RE.search(normbasename)
+        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
     if not match:
         match = regexes.I3_RUN_DIR_RE.match(normbasename)
     if not match:
@@ -136,7 +136,7 @@ def i3_subrun_category_xform(path):
     normbasename = os.path.basename(utils.expand(path))
     match = regexes.I3_SUBRUN_RE.search(normbasename)
     if not match:
-        match = regexes.I3_OSCNEXT_FNAME_RE.search(normbasename)
+        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
     if not match:
         raise ValueError(
             'path "{}" is incompatible with known I3 naming'

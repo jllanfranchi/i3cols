@@ -41,11 +41,15 @@ try:
     from collections.abc import Sequence
 except ImportError:
     from collections import Sequence
+from functools import partial
 import numpy as np
 from six import string_types
 
 from i3cols import cols, utils
 from i3cols import dtypes as dt
+
+
+USE_NEW_WAY = False
 
 
 def run_icetray_converter(paths, outdir, sub_event_stream, keys, exclude_keys):
@@ -104,6 +108,8 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         "mapping_str_structured_scalar",
         "mapping_str_attrs",
         "attrs",
+        "i3type_converters",
+        "name_converters",
         "unhandled_types",
         "frame",
         "failed_keys",
@@ -169,7 +175,9 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
             dataclasses.I3DOMCalibration: self.extract_i3domcalibration,
         }
 
-        self.getters = {recclasses.I3PortiaEvent: (dt.I3PORTIAEVENT_T, "Get{}")}
+        self.getters = {
+            recclasses.I3PortiaEvent: dict(dtype=dt.I3PORTIAEVENT_T, fmt="Get{}")
+        }
 
         self.mapping_str_simple_scalar = {
             dataclasses.I3MapStringDouble: np.float64,
@@ -183,7 +191,10 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
                 genie_icetray.I3GENIEResultDict
             ] = dt.I3GENIERESULTDICT_SCALARS_T
 
-        self.mapping_str_attrs = {dataclasses.I3FilterResultMap: dt.I3FILTERRESULT_T}
+        # Following make use of `self.extract_mapscalarattrs`
+        self.mapping_str_attrs = {
+            dataclasses.I3FilterResultMap: dict(value_dtype=dt.I3FILTERRESULT_T)
+        }
 
         self.attrs = {
             icetray.I3RUsage: dt.I3RUSAGE_T,
@@ -227,6 +238,133 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         if santa:
             self.attrs[santa.I3SantaFitParams] = dt.I3SANTAFITPARAMS_T
 
+        # Define a dict where keys are names (keys) of items in a frame and
+        # values are functions able to extract the obj. Note `name_converters`
+        # takes precedence over `i3type_converters`.
+
+        self.name_converters = {}
+
+        self.name_converters["I3MCWeightDict"] = partial(
+            self.extract_mapscalarattrs, obj_dtype=dt.MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T
+        )
+
+        # Define a dict where keys are i3 types and values are functions
+        # able to extract the obj; each must take just 2 args: (obj, to_numpy)
+        # and either return a numpy array or scalar (if to_numpy=True) or a
+        # 2-tuple where the first element is the tuple or list of tuples and
+        # the second element is a numpy dtype (possibly structured) where
+        # calling np.array(tup[0], dtype=tup[1]) would "work".
+
+        self.i3type_converters = {}
+
+        # I3 scalars
+        for i3_dt, np_dt in {
+            icetray.I3Bool: np.bool8,
+            icetray.I3Int: np.int32,
+            dataclasses.I3Double: np.float64,
+            dataclasses.I3String: np.string0,
+        }.items():
+            self.i3type_converters[i3_dt] = partial(self.extract_scalar, dtype=np_dt)
+
+        # Must extract values using "getters" (functions like GetX(), GetY(), etc.)
+        for i3_dt, extract_getters_kw in {
+            recclasses.I3PortiaEvent: dict(dtype=dt.I3PORTIAEVENT_T, fmt="Get{}")
+        }.items():
+            self.i3type_converters[i3_dt] = partial(
+                self.extract_getters, **extract_getters_kw
+            )
+
+        # {<str>: <simple scalar>}
+        for i3_dt, np_dt in {
+            dataclasses.I3MapStringDouble: np.float64,
+            dataclasses.I3MapStringInt: np.int32,
+            dataclasses.I3MapStringBool: np.bool8,
+        }.items():
+            self.i3type_converters[i3_dt] = partial(
+                utils.dict2struct, set_explicit_dtype_func=np_dt
+            )
+
+        # {<str>: <struct scalar>}
+        mapping_str_structured_scalar = {}
+        if genie_icetray:
+            mapping_str_structured_scalar[
+                genie_icetray.I3GENIEResultDict
+            ] = dt.I3GENIERESULTDICT_SCALARS_T
+        for i3_dt, np_dt in mapping_str_structured_scalar.items():
+            self.i3type_converters[i3_dt] = partial(
+                utils.maptype2np, dtype=np_dt
+            )
+
+        # Following make use of `self.extract_mapscalarattrs`; one of
+        #
+        #   obj_dtype({<str>: <scalar>, ...})
+        #   {<str>: value_dtype(<scalar>), ...}
+        #   {<str>: <inferred type scalar>, ...}
+        #
+        for i3_dt, extract_mapscalarattrs_kwargs in {
+            dataclasses.I3FilterResultMap: dict(value_dtype=dt.I3FILTERRESULT_T)
+        }.items():
+            if extract_mapscalarattrs_kwargs is None:
+                func = self.extract_mapscalarattrs
+            else:
+                func = partial(
+                    self.extract_mapscalarattrs, **extract_mapscalarattrs_kwargs
+                )
+            self.i3type_converters[i3_dt] = func
+
+        # tuple(obj.{name} for name in np_dt.names)
+        for i3_dt, np_dt in {
+            icetray.I3RUsage: dt.I3RUSAGE_T,
+            icetray.OMKey: dt.OMKEY_T,
+            dataclasses.TauParam: dt.TAUPARAM_T,
+            dataclasses.LinearFit: dt.LINEARFIT_T,
+            dataclasses.SPEChargeDistribution: dt.SPECHARGEDISTRIBUTION_T,
+            dataclasses.I3Direction: dt.I3DIRECTION_T,
+            dataclasses.I3EventHeader: dt.I3EVENTHEADER_T,
+            dataclasses.I3FilterResult: dt.I3FILTERRESULT_T,
+            dataclasses.I3Position: dt.I3POSITION_T,
+            dataclasses.I3Particle: dt.I3PARTICLE_T,
+            dataclasses.I3ParticleID: dt.I3PARTICLEID_T,
+            dataclasses.I3VEMCalibration: dt.I3VEMCALIBRATION_T,
+            dataclasses.SPEChargeDistribution: dt.SPECHARGEDISTRIBUTION_T,
+            dataclasses.I3SuperDSTTrigger: dt.I3SUPERDSTTRIGGER_T,
+            dataclasses.I3Time: dt.I3TIME_T,
+            dataclasses.I3TimeWindow: dt.I3TIMEWINDOW_T,
+            recclasses.I3DipoleFitParams: dt.I3DIPOLEFITPARAMS_T,
+            recclasses.I3LineFitParams: dt.I3LINEFITPARAMS_T,
+            recclasses.I3FillRatioInfo: dt.I3FILLRATIOINFO_T,
+            recclasses.I3FiniteCuts: dt.I3FINITECUTS_T,
+            recclasses.I3DirectHitsValues: dt.I3DIRECTHITSVALUES_T,
+            recclasses.I3HitStatisticsValues: dt.I3HITSTATISTICSVALUES_T,
+            recclasses.I3HitMultiplicityValues: dt.I3HITMULTIPLICITYVALUES_T,
+            recclasses.I3TensorOfInertiaFitParams: dt.I3TENSOROFINERTIAFITPARAMS_T,
+            recclasses.I3Veto: dt.I3VETO_T,
+            recclasses.I3CLastFitParams: dt.I3CLASTFITPARAMS_T,
+            recclasses.I3CscdLlhFitParams: dt.I3CSCDLLHFITPARAMS_T,
+            recclasses.I3DST16: dt.I3DST16_T,
+            recclasses.DSTPosition: dt.DSTPOSITION_T,
+            recclasses.I3StartStopParams: dt.I3STARTSTOPPARAMS_T,
+            recclasses.I3TrackCharacteristicsValues: dt.I3TRACKCHARACTERISTICSVALUES_T,
+            recclasses.I3TimeCharacteristicsValues: dt.I3TIMECHARACTERISTICSVALUES_T,
+            recclasses.CramerRaoParams: dt.CRAMERRAOPARAMS_T,
+        }.items():
+            self.i3type_converters[i3_dt] = partial(self.extract_attrs, dtype=np_dt)
+
+        # Custom functions for types that don't fit into other categories
+        self.i3type_converters.update(
+            {
+                dataclasses.I3MCTree: self.extract_flat_mctree,
+                dataclasses.I3RecoPulseSeries: self.extract_flat_pulse_series,
+                dataclasses.I3RecoPulseSeriesMap: self.extract_flat_pulse_series,
+                dataclasses.I3RecoPulseSeriesMapMask: self.extract_flat_pulse_series,
+                dataclasses.I3RecoPulseSeriesMapUnion: self.extract_flat_pulse_series,
+                dataclasses.I3SuperDSTTriggerSeries: self.extract_seq_of_same_type,
+                dataclasses.I3TriggerHierarchy: self.extract_flat_trigger_hierarchy,
+                dataclasses.I3VectorI3Particle: self.extract_singleton_seq_to_scalar,
+                dataclasses.I3DOMCalibration: self.extract_i3domcalibration,
+            }
+        )
+
         # Define types we know we don't handle; these will be expanded as new
         # types are encountered to avoid repeatedly failing on the same types
 
@@ -249,6 +387,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         )
         if tpx:
             self.unhandled_types.add(tpx.I3TopPulseInfoSeriesMap)
+
 
         self.frame = None
         self.failed_keys = set()
@@ -342,7 +481,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
                 continue
 
             try:
-                np_value = self.extract_object(value)
+                np_value = self.extract_object(value, name=key, to_numpy=True)
             except Exception:
                 print("failed on key {}".format(key))
                 raise
@@ -355,7 +494,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
 
         return extracted_data
 
-    def extract_object(self, obj, to_numpy=True):
+    def extract_object(self, obj, name=None, to_numpy=True):
         """Convert an object from a frame to a Numpy typed object.
 
         Note that e.g. extracting I3RecoPulseSeriesMap{Mask,Union} requires
@@ -364,24 +503,58 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         Parameters
         ----------
         obj : frame object
+            Frame object to have data extracted from
+
+        name : str or None, optional
+            Name of the frame object. Only necessary for very specific cases
+            (for now, just I3MCWeightDict)
+
         to_numpy : bool, optional
+            Convert resulting tuple to a Numpy array or scalar (as appropriate
+            for the frame item; see individual extraction methods for which is
+            returned for a given name or object type)
 
         Returns
         -------
         np_obj : numpy-typed object or None
 
         """
+        # TODO: define a single dict with a single extraction (partial)
+        # function per type that gets dispatched, rather than separate dict
+        # lookups for each kind of thing
+
+        # Extract by name if name is provided and its extraction method is
+        # defined
+        if name is not None:
+            if name == "I3MCWeightDict":
+                return self.extract_mapscalarattrs(
+                    obj,
+                    obj_dtype=dt.MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T,
+                    to_numpy=to_numpy,
+                )
+
+        # Otherwise, extract by obj type
+
         obj_t = type(obj)
 
         if obj_t in self.unhandled_types:
             return None
 
+        if USE_NEW_WAY:
+            func = self.i3type_converters.get(obj_t, None)
+            if func is None:
+                # New unhandled type found
+                key_txt = " (key='{}')".format(name) if name else ""
+                print("WARNING: found new unhandled type: {}{}".format(obj_t, key_txt))
+                self.unhandled_types.add(obj_t)
+                return None
+            return func(obj)
+
+        # OLD WAY (remove after validating new way)
+
         dtype = self.i3_scalars.get(obj_t, None)
         if dtype:
-            val = dtype(obj.value)
-            if to_numpy:
-                return val
-            return val, dtype
+            return self.extract_scalar(obj, dtype=dtype, to_numpy=to_numpy)
 
         dtype_fmt = self.getters.get(obj_t, None)
         if dtype_fmt:
@@ -501,7 +674,6 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         -------
         flat_particles : list of tuples or ndarray of dtype `FLAT_PARTICLE_T`
 
-
         Examples
         --------
         This is a recursive function, with defaults defined for calling simply for
@@ -595,12 +767,10 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         E.g., I3VectorI3Particle that, by construction, contains just one
         particle
 
-
         Parameters
         ----------
         seq : sequence
         to_numpy : bool, optional
-
 
         Returns
         -------
@@ -615,13 +785,11 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         of those attributes, etc.) into a numpy.ndarray based on the specification
         provided by `dtype`.
 
-
         Parameters
         ----------
         obj
         dtype : numpy.dtype
         to_numpy : bool, optional
-
 
         Returns
         -------
@@ -658,30 +826,34 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
 
         return vals, dtype
 
-    def extract_mapscalarattrs(self, mapping, subdtype=None, to_numpy=True):
+    def extract_mapscalarattrs(
+        self, mapping, obj_dtype=None, value_dtype=None, to_numpy=True
+    ):
         """Convert a mapping (containing string keys and scalar-typed values)
         to a single-element Numpy array from the values of `mapping`, using
-        keys defined by `subdtype.names`.
+        keys defined by `value_dtype.names`.
 
-        Use this function if you already know the `subdtype` you want to end up
+        Use this function if you already know the `value_dtype` you want to end up
         with. Use `i3cols.utils.dict2struct` directly if you do not know
         the dtype(s) of the mapping's values ahead of time.
-
 
         Parameters
         ----------
         mapping : mapping from strings to scalars
 
-        dtype : numpy.dtype
-            If scalar dtype, convert via `i3cols.utils.dict2struct`. If
-            structured dtype, convert keys specified by the struct field names
-            and values are converted according to the corresponding type.
+        obj_dtype : numpy.dtype or None, optional
+            Type that describes entire object. If both `obj_dtype` and
+            `value_dtype` are provided as numpy.dtypes, `obj_dtype` takes
+            precedence.
 
+        value_dtype : numpy.dtype or None, optional
+            Convert all values via this dtype; ignored if `obj_dtype` is
+            specified (since that should contain all type information for
+            values of the dict)
 
         Returns
         -------
         array : shape-(1,) numpy.ndarray of dtype `dtype`
-
 
         See Also
         --------
@@ -690,35 +862,41 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
             as you go (i.e., this is not known a priori)
 
         """
-        keys = mapping.keys()
-        if not isinstance(mapping, OrderedDict):
-            keys.sort()
+        # TODO: sort by descending order of dtype # bits, _then_ by alphabetical order
 
-        out_vals = []
-        out_dtype = []
+        if obj_dtype is not None:
+            out_vals = tuple(mapping[key] for key in obj_dtype.names)
 
-        if subdtype is None:  # infer subdtype from values in mapping
-            for key in keys:
-                val = mapping[key]
-                info_tup, subdtype = self.extract_object(val, to_numpy=False)
-                out_vals.append(info_tup)
-                out_dtype.append((key, subdtype))
-        else:  # scalar subdtype
-            for key in keys:
-                out_vals.append(mapping[key])
-                out_dtype.append((key, subdtype))
+        else:
+            keys = mapping.keys()
+            if not isinstance(mapping, OrderedDict):
+                keys.sort()
 
-        out_vals = tuple(out_vals)
+            out_vals = []
+            obj_dtype = []
+
+            if value_dtype is not None:
+                for key in keys:
+                    out_vals.append(mapping[key])
+                    obj_dtype.append((key, value_dtype))
+
+            else:  # infer types from values
+                for key in keys:
+                    val = mapping[key]
+                    info_tup, value_dtype = self.extract_object(val, to_numpy=False)
+                    out_vals.append(info_tup)
+                    obj_dtype.append((key, value_dtype))
+
+            out_vals = tuple(out_vals)
 
         if to_numpy:
-            return np.array([out_vals], dtype=out_dtype)[0]
+            return np.array([out_vals], dtype=obj_dtype)[0]
 
-        return out_vals, out_dtype
+        return out_vals, obj_dtype
 
     def extract_getters(self, obj, dtype, fmt="Get{}", to_numpy=True):
         """Convert an object whose data has to be extracted via methods that
         behave like getters (e.g., .`xyz = get_xyz()`).
-
 
         Parameters
         ----------
@@ -727,12 +905,13 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         fmt : str
         to_numpy : bool, optional
 
-
         Examples
         --------
         To get all of the values of an I3PortiaEvent: .. ::
 
-            extract_getters(frame["PoleEHESummaryPulseInfo"], dtype=dt.I3PORTIAEVENT_T, fmt="Get{}")
+            extract_getters(
+                frame["PoleEHESummaryPulseInfo"], dtype=dt.I3PORTIAEVENT_T, fmt="Get{}"
+            )
 
         """
         vals = []
@@ -789,6 +968,16 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
             return np.array(data_tups, dtype=val0_dtype)
 
         return data_tups, val0_dtype
+
+    @staticmethod
+    def extract_scalar(obj, dtype, to_numpy=True):
+        """Convert a scalar object."""
+        val = dtype(obj.value)
+
+        if to_numpy:
+            return val
+
+        return val, dtype
 
     def extract_i3domcalibration(self, obj, to_numpy=True):
         """Extract the information from an I3DOMCalibration frame object"""

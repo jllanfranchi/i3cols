@@ -57,11 +57,12 @@ from numbers import Integral, Number
 import os
 import re
 import sys
+import tempfile
 
 import numpy as np
 from six import string_types
 
-from i3cols import regexes
+from i3cols import dtypes, regexes
 
 
 NSORT_RE = re.compile(r"(\d+)")
@@ -701,3 +702,70 @@ def test_get_i3_data_fname_info():
         except Exception:
             sys.stderr.write('Failure on test input = "{}"\n'.format(test_input))
             raise
+
+
+def normalize_oscnext_I3MCWeightDict(path, tempdir, recurse=True):
+    """Remove fields that appear on only a subset of the processed oscNext
+    events (from level4 (or 5?) processing on)
+
+    Parameters
+    ----------
+    path : str
+        Path to I3MCWeightDict column directory, path to a subrun (i.e.,
+        containing the I3MCWeightDict column directory), or path to a directory
+        containing all subruns (each of which contains an I3MCWeightDict column
+        directory)
+
+    tempdir : str
+        Directory in which to store temporary intermediate arrays as the are
+        being constructed (note a new unique directory will be created within
+        this to avoid collisions with other processes)
+
+    """
+    path = expand(path)
+    tempdir = expand(tempdir)
+    mkdir(tempdir)
+
+    ref_dtype = dtypes.MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T
+    ref_names = ref_dtype.names
+
+    my_tempdir = tempfile.mkdtemp(dir=tempdir)
+    try:
+        tmp_path_old = os.path.join(my_tempdir, "I3MCWeightDict.data.old.npy")
+        tmp_path_new = os.path.join(my_tempdir, "I3MCWeightDict.data.new.npy")
+
+        def fix_and_replace(i3mcwd_coldir_path):
+            src_path = os.path.join(i3mcwd_coldir_path, "data.npy")
+            src_array = np.load(src_path, mmap_mode="r")
+            if src_array.dtype.names == ref_names:
+                return
+            print(src_path)
+            new_array = np.lib.format.open_memmap(
+                tmp_path_new, mode="w+", shape=(len(src_array),), dtype=ref_dtype
+            )
+            for name in ref_names:
+                new_array[name][:] = src_array[name][:]
+            del src_array, new_array
+            shutil.move(src_path, tmp_path_old)
+            shutil.move(tmp_path_new, src_path)
+
+        if os.path.basename(path) == "I3MCWeightDict":
+            fix_and_replace(i3mcwd_coldir_path=path)
+
+        for dirpath, dirs, _ in os.walk(path, followlinks=True):
+            if recurse:
+                dirs.sort(key=nsort_key_func)
+            else:
+                del dirs[:]
+
+            if "I3MCWeightDict" not in dirs:
+                continue
+
+            fix_and_replace(i3mcwd_coldir_path=os.path.join(dirpath, "I3MCWeightDict"))
+
+    except:
+        print('ERROR; Temporary files can be found in "{}"'.format(my_tempdir))
+        raise
+
+    else:
+        shutil.rmtree(my_tempdir)
