@@ -247,19 +247,25 @@ def filter_keys_from_existing(outdir, keys=None, exclude_keys=None):
         or invalid_info["match_special"] == MatchSpecialCase.MATCH_EVERYTHING
     )
 
-    updated_keys = sorted(
-        functools.reduce(
-            operator.add,
-            (list(s) for k, s in valid_info.items() if k != "match_special"),
+    if keys is None or valid_info["match_special"] == MatchSpecialCase.MATCH_EVERYTHING:
+        updated_keys = None
+    else:
+        updated_keys = sorted(
+            functools.reduce(
+                operator.add,
+                (list(s) for k, s in valid_info.items() if k != "match_special"),
+            )
         )
-    )
 
-    updated_exclude_keys = sorted(
-        functools.reduce(
-            operator.add,
-            (list(s) for k, s in invalid_info.items() if k != "match_special"),
+    if invalid_info["match_special"] == MatchSpecialCase.MATCH_NOTHING:
+        updated_exclude_keys = None
+    else:
+        updated_exclude_keys = sorted(
+            functools.reduce(
+                operator.add,
+                (list(s) for k, s in invalid_info.items() if k != "match_special"),
+            )
         )
-    )
 
     # print("updated_keys:\n{}\n".format(updated_keys))
     # print("updated_exclude_keys:\n{}\n".format(updated_exclude_keys))

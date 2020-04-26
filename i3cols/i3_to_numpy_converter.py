@@ -49,7 +49,7 @@ from i3cols import cols, utils
 from i3cols import dtypes as dt
 
 
-USE_NEW_WAY = False
+USE_NEW_WAY = True
 
 
 def run_icetray_converter(paths, outdir, sub_event_stream, keys, exclude_keys):
@@ -101,15 +101,9 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         "icetray",
         "dataio",
         "dataclasses",
-        "i3_scalars",
-        "custom_funcs",
-        "getters",
-        "mapping_str_simple_scalar",
-        "mapping_str_structured_scalar",
-        "mapping_str_attrs",
-        "attrs",
-        "i3type_converters",
         "name_converters",
+        "i3type_converters",
+        "unhandled_names",
         "unhandled_types",
         "frame",
         "failed_keys",
@@ -155,88 +149,6 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         self.icetray = icetray
         self.dataio = dataio
         self.dataclasses = dataclasses
-
-        self.i3_scalars = {
-            icetray.I3Bool: np.bool8,
-            icetray.I3Int: np.int32,
-            dataclasses.I3Double: np.float64,
-            dataclasses.I3String: np.string0,
-        }
-
-        self.custom_funcs = {
-            dataclasses.I3MCTree: self.extract_flat_mctree,
-            dataclasses.I3RecoPulseSeries: self.extract_flat_pulse_series,
-            dataclasses.I3RecoPulseSeriesMap: self.extract_flat_pulse_series,
-            dataclasses.I3RecoPulseSeriesMapMask: self.extract_flat_pulse_series,
-            dataclasses.I3RecoPulseSeriesMapUnion: self.extract_flat_pulse_series,
-            dataclasses.I3SuperDSTTriggerSeries: self.extract_seq_of_same_type,
-            dataclasses.I3TriggerHierarchy: self.extract_flat_trigger_hierarchy,
-            dataclasses.I3VectorI3Particle: self.extract_singleton_seq_to_scalar,
-            dataclasses.I3DOMCalibration: self.extract_i3domcalibration,
-        }
-
-        self.getters = {
-            recclasses.I3PortiaEvent: dict(dtype=dt.I3PORTIAEVENT_T, fmt="Get{}")
-        }
-
-        self.mapping_str_simple_scalar = {
-            dataclasses.I3MapStringDouble: np.float64,
-            dataclasses.I3MapStringInt: np.int32,
-            dataclasses.I3MapStringBool: np.bool8,
-        }
-
-        self.mapping_str_structured_scalar = {}
-        if genie_icetray:
-            self.mapping_str_structured_scalar[
-                genie_icetray.I3GENIEResultDict
-            ] = dt.I3GENIERESULTDICT_SCALARS_T
-
-        # Following make use of `self.extract_mapscalarattrs`
-        self.mapping_str_attrs = {
-            dataclasses.I3FilterResultMap: dict(value_dtype=dt.I3FILTERRESULT_T)
-        }
-
-        self.attrs = {
-            icetray.I3RUsage: dt.I3RUSAGE_T,
-            icetray.OMKey: dt.OMKEY_T,
-            dataclasses.TauParam: dt.TAUPARAM_T,
-            dataclasses.LinearFit: dt.LINEARFIT_T,
-            dataclasses.SPEChargeDistribution: dt.SPECHARGEDISTRIBUTION_T,
-            dataclasses.I3Direction: dt.I3DIRECTION_T,
-            dataclasses.I3EventHeader: dt.I3EVENTHEADER_T,
-            dataclasses.I3FilterResult: dt.I3FILTERRESULT_T,
-            dataclasses.I3Position: dt.I3POSITION_T,
-            dataclasses.I3Particle: dt.I3PARTICLE_T,
-            dataclasses.I3ParticleID: dt.I3PARTICLEID_T,
-            dataclasses.I3VEMCalibration: dt.I3VEMCALIBRATION_T,
-            dataclasses.SPEChargeDistribution: dt.SPECHARGEDISTRIBUTION_T,
-            dataclasses.I3SuperDSTTrigger: dt.I3SUPERDSTTRIGGER_T,
-            dataclasses.I3Time: dt.I3TIME_T,
-            dataclasses.I3TimeWindow: dt.I3TIMEWINDOW_T,
-            recclasses.I3DipoleFitParams: dt.I3DIPOLEFITPARAMS_T,
-            recclasses.I3LineFitParams: dt.I3LINEFITPARAMS_T,
-            recclasses.I3FillRatioInfo: dt.I3FILLRATIOINFO_T,
-            recclasses.I3FiniteCuts: dt.I3FINITECUTS_T,
-            recclasses.I3DirectHitsValues: dt.I3DIRECTHITSVALUES_T,
-            recclasses.I3HitStatisticsValues: dt.I3HITSTATISTICSVALUES_T,
-            recclasses.I3HitMultiplicityValues: dt.I3HITMULTIPLICITYVALUES_T,
-            recclasses.I3TensorOfInertiaFitParams: dt.I3TENSOROFINERTIAFITPARAMS_T,
-            recclasses.I3Veto: dt.I3VETO_T,
-            recclasses.I3CLastFitParams: dt.I3CLASTFITPARAMS_T,
-            recclasses.I3CscdLlhFitParams: dt.I3CSCDLLHFITPARAMS_T,
-            recclasses.I3DST16: dt.I3DST16_T,
-            recclasses.DSTPosition: dt.DSTPOSITION_T,
-            recclasses.I3StartStopParams: dt.I3STARTSTOPPARAMS_T,
-            recclasses.I3TrackCharacteristicsValues: dt.I3TRACKCHARACTERISTICSVALUES_T,
-            recclasses.I3TimeCharacteristicsValues: dt.I3TIMECHARACTERISTICSVALUES_T,
-            recclasses.CramerRaoParams: dt.CRAMERRAOPARAMS_T,
-        }
-        if millipede:
-            self.attrs[
-                millipede.gulliver.I3LogLikelihoodFitParams
-            ] = dt.I3LOGLIKELIHOODFITPARAMS_T
-        if santa:
-            self.attrs[santa.I3SantaFitParams] = dt.I3SANTAFITPARAMS_T
 
         # Define a dict where keys are names (keys) of items in a frame and
         # values are functions able to extract the obj. Note `name_converters`
@@ -313,7 +225,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
             self.i3type_converters[i3_dt] = func
 
         # tuple(obj.{name} for name in np_dt.names)
-        for i3_dt, np_dt in {
+        attrs = {
             icetray.I3RUsage: dt.I3RUSAGE_T,
             icetray.OMKey: dt.OMKEY_T,
             dataclasses.TauParam: dt.TAUPARAM_T,
@@ -347,7 +259,14 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
             recclasses.I3TrackCharacteristicsValues: dt.I3TRACKCHARACTERISTICSVALUES_T,
             recclasses.I3TimeCharacteristicsValues: dt.I3TIMECHARACTERISTICSVALUES_T,
             recclasses.CramerRaoParams: dt.CRAMERRAOPARAMS_T,
-        }.items():
+        }
+        if millipede:
+            attrs[
+                millipede.gulliver.I3LogLikelihoodFitParams
+            ] = dt.I3LOGLIKELIHOODFITPARAMS_T
+        if santa:
+            attrs[santa.I3SantaFitParams] = dt.I3SANTAFITPARAMS_T
+        for i3_dt, np_dt in attrs.items():
             self.i3type_converters[i3_dt] = partial(self.extract_attrs, dtype=np_dt)
 
         # Custom functions for types that don't fit into other categories
@@ -368,6 +287,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         # Define types we know we don't handle; these will be expanded as new
         # types are encountered to avoid repeatedly failing on the same types
 
+        self.unhandled_names = set()
         self.unhandled_types = set(
             [
                 dataclasses.I3Geometry,
@@ -387,7 +307,6 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         )
         if tpx:
             self.unhandled_types.add(tpx.I3TopPulseInfoSeriesMap)
-
 
         self.frame = None
         self.failed_keys = set()
@@ -519,73 +438,35 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         np_obj : numpy-typed object or None
 
         """
-        # TODO: define a single dict with a single extraction (partial)
-        # function per type that gets dispatched, rather than separate dict
-        # lookups for each kind of thing
-
         # Extract by name if name is provided and its extraction method is
         # defined
-        if name is not None:
-            if name == "I3MCWeightDict":
-                return self.extract_mapscalarattrs(
-                    obj,
-                    obj_dtype=dt.MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T,
-                    to_numpy=to_numpy,
-                )
 
-        # Otherwise, extract by obj type
+        if name is not None:
+            if name in self.unhandled_names:
+                return None
+
+            func = self.name_converters.get(name, None)
+            if func is not None:
+                return func(obj, to_numpy=to_numpy)
+
+        # Otherwise, get extraction function based on obj's type
 
         obj_t = type(obj)
 
         if obj_t in self.unhandled_types:
             return None
 
-        if USE_NEW_WAY:
-            func = self.i3type_converters.get(obj_t, None)
-            if func is None:
-                # New unhandled type found
-                key_txt = " (key='{}')".format(name) if name else ""
-                print("WARNING: found new unhandled type: {}{}".format(obj_t, key_txt))
-                self.unhandled_types.add(obj_t)
-                return None
-            return func(obj)
-
-        # OLD WAY (remove after validating new way)
-
-        dtype = self.i3_scalars.get(obj_t, None)
-        if dtype:
-            return self.extract_scalar(obj, dtype=dtype, to_numpy=to_numpy)
-
-        dtype_fmt = self.getters.get(obj_t, None)
-        if dtype_fmt:
-            return self.extract_getters(obj, *dtype_fmt, to_numpy=to_numpy)
-
-        dtype = self.mapping_str_simple_scalar.get(obj_t, None)
-        if dtype:
-            return utils.dict2struct(
-                obj, set_explicit_dtype_func=dtype, to_numpy=to_numpy
-            )
-
-        dtype = self.mapping_str_structured_scalar.get(obj_t, None)
-        if dtype:
-            return utils.maptype2np(obj, dtype=dtype, to_numpy=to_numpy)
-
-        dtype = self.mapping_str_attrs.get(obj_t, None)
-        if dtype:
-            return self.extract_mapscalarattrs(obj, to_numpy=to_numpy)
-
-        dtype = self.attrs.get(obj_t, None)
-        if dtype:
-            return self.extract_attrs(obj, dtype, to_numpy=to_numpy)
-
-        func = self.custom_funcs.get(obj_t, None)
-        if func:
+        func = self.i3type_converters.get(obj_t, None)
+        if func is not None:
             return func(obj, to_numpy=to_numpy)
 
         # New unhandled type found
-        print("WARNING: found new unhandled type: {}".format(obj_t))
-        self.unhandled_types.add(obj_t)
 
+        key_txt = " (key='{}')".format(name) if name else ""
+        print("WARNING: found new unhandled type: {}{}".format(obj_t, key_txt))
+        self.unhandled_types.add(obj_t)
+        if name is not None:
+            self.unhandled_names.add(name)
         return None
 
     @staticmethod
@@ -813,7 +694,14 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
                 if out is None:
                     out = self.extract_attrs(val, subdtype, to_numpy=False)
                 assert out is not None, "{}: {} {}".format(name, subdtype, val)
-                info_tup, _ = out
+                try:
+                    info_tup, _ = out
+                except:
+                    print(obj)
+                    print(dtype)
+                    print(out)
+                    print(len(out))
+                    raise
                 vals.append(info_tup)
             else:
                 raise TypeError("{}".format(subdtype))
