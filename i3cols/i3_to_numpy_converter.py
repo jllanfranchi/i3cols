@@ -200,9 +200,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
                 genie_icetray.I3GENIEResultDict
             ] = dt.I3GENIERESULTDICT_SCALARS_T
         for i3_dt, np_dt in mapping_str_structured_scalar.items():
-            self.i3type_converters[i3_dt] = partial(
-                utils.maptype2np, dtype=np_dt
-            )
+            self.i3type_converters[i3_dt] = partial(utils.maptype2np, dtype=np_dt)
 
         # Following make use of `self.extract_mapscalarattrs`; one of
         #
@@ -593,7 +591,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
                         daughter,
                         dtype=dt.I3PARTICLE_T,
                         dtype_descr=dt.I3PARTICLE_T_DESCR,
-                        to_numpy=False
+                        to_numpy=False,
                     )
                     flat_particles.append((level, parent_idx, info_tup))
 
