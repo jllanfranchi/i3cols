@@ -17,6 +17,7 @@ __all__ = [
     "I3OMGEO_T",
     "I3DOMCALIBRATION_T",
     "PULSE_T",
+    "PULSE_T_DESCR",
     "PHOTON_T",
     "HITS_SUMMARY_T",
     "EVT_HIT_INFO_T",
@@ -26,6 +27,7 @@ __all__ = [
     "I3TIME_T",
     "I3PARTICLEID_T",
     "I3PARTICLE_T",
+    "I3PARTICLE_T_DESCR",
     "FLAT_PARTICLE_T",
     "CRAMERRAOPARAMS_T",
     "DOMCALVERSION_T",
@@ -262,6 +264,8 @@ PULSE_T = np.dtype(
 )
 """dataclasses/public/dataclasses/physics/I3RecoPulse.h"""
 
+PULSE_T_DESCR = PULSE_T.descr
+
 
 FLAT_PULSE_T = np.dtype([("key", OMKEY_T), ("pulse", PULSE_T)])
 """Both omkey and pulse all in one (whereas in pulse series, omkey is a key and
@@ -391,6 +395,8 @@ I3PARTICLE_T = np.dtype(
     ]
 )
 """dataclasses/public/dataclasses/physics/I3Particle.h"""
+
+I3PARTICLE_T_DESCR = I3PARTICLE_T.descr
 
 
 I3SUPERDSTTRIGGER_T = np.dtype([("time", np.float64), ("length", np.float64)])

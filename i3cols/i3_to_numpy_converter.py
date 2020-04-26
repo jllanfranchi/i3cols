@@ -42,14 +42,12 @@ try:
 except ImportError:
     from collections import Sequence
 from functools import partial
+
 import numpy as np
 from six import string_types
 
 from i3cols import cols, utils
 from i3cols import dtypes as dt
-
-
-USE_NEW_WAY = True
 
 
 def run_icetray_converter(paths, outdir, sub_event_stream, keys, exclude_keys):
@@ -101,12 +99,11 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         "icetray",
         "dataio",
         "dataclasses",
-        "name_converters",
+        "key_converters",
         "i3type_converters",
-        "unhandled_names",
+        "unhandled_keys",
         "unhandled_types",
         "frame",
-        "failed_keys",
         "frame_data",
     ]
 
@@ -150,13 +147,13 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         self.dataio = dataio
         self.dataclasses = dataclasses
 
-        # Define a dict where keys are names (keys) of items in a frame and
-        # values are functions able to extract the obj. Note `name_converters`
+        # Define a dict where keys are the names (keys) of items in a frame and
+        # values are functions able to extract the obj. Note `key_converters`
         # takes precedence over `i3type_converters`.
 
-        self.name_converters = {}
+        self.key_converters = {}
 
-        self.name_converters["I3MCWeightDict"] = partial(
+        self.key_converters["I3MCWeightDict"] = partial(
             self.extract_mapscalarattrs, obj_dtype=dt.MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T
         )
 
@@ -267,7 +264,9 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         if santa:
             attrs[santa.I3SantaFitParams] = dt.I3SANTAFITPARAMS_T
         for i3_dt, np_dt in attrs.items():
-            self.i3type_converters[i3_dt] = partial(self.extract_attrs, dtype=np_dt)
+            self.i3type_converters[i3_dt] = partial(
+                self.extract_attrs, dtype=np_dt, dtype_descr=np_dt.descr
+            )
 
         # Custom functions for types that don't fit into other categories
         self.i3type_converters.update(
@@ -287,7 +286,17 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         # Define types we know we don't handle; these will be expanded as new
         # types are encountered to avoid repeatedly failing on the same types
 
-        self.unhandled_names = set()
+        self.unhandled_keys = set(
+            [
+                "I3Geometry",
+                "I3Calibration",
+                "I3DetectorStatus",
+                "CalibrationErrata",
+                "InIceRawData",
+                "IceTopRawData",
+                "I3DSTHeader",
+            ]
+        )
         self.unhandled_types = set(
             [
                 dataclasses.I3Geometry,
@@ -309,7 +318,6 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
             self.unhandled_types.add(tpx.I3TopPulseInfoSeriesMap)
 
         self.frame = None
-        self.failed_keys = set()
         self.frame_data = []
 
     def __call__(self, frame, sub_event_stream=None, is_key_valid=None):
@@ -381,26 +389,27 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         """
         self.frame = frame
 
-        keys = sorted(
-            key
-            for key in frame.keys()
-            if is_key_valid(key) and key not in self.failed_keys
-        )
-
         extracted_data = {}
 
-        for key in keys:
-            if key not in frame:
+        # NOTE: can't iterate over items because there might be an unhandled
+        #   key where accessing its value requires a library be loaded that we
+        #   haven't loaded (or it is impossible to do so)
+        for key in frame.keys():
+            if not is_key_valid(key) or key in self.unhandled_keys:
                 continue
 
             try:
                 value = frame[key]
-            except Exception:
-                self.failed_keys.add(key)
+            except Exception as err:
+                print(
+                    "ERROR: Failed to get value at key '{}', will skip same"
+                    " key from here on. Error message:\n{}".format(key, err)
+                )
+                self.unhandled_keys.add(key)
                 continue
 
             try:
-                np_value = self.extract_object(value, name=key, to_numpy=True)
+                np_value = self.extract_object(value, key=key, to_numpy=True)
             except Exception:
                 print("failed on key {}".format(key))
                 raise
@@ -413,7 +422,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
 
         return extracted_data
 
-    def extract_object(self, obj, name=None, to_numpy=True):
+    def extract_object(self, obj, key=None, to_numpy=True):
         """Convert an object from a frame to a Numpy typed object.
 
         Note that e.g. extracting I3RecoPulseSeriesMap{Mask,Union} requires
@@ -424,30 +433,29 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         obj : frame object
             Frame object to have data extracted from
 
-        name : str or None, optional
-            Name of the frame object. Only necessary for very specific cases
+        key : str or None, optional
+            key of the frame object. Only necessary for very specific cases
             (for now, just I3MCWeightDict)
 
         to_numpy : bool, optional
             Convert resulting tuple to a Numpy array or scalar (as appropriate
             for the frame item; see individual extraction methods for which is
-            returned for a given name or object type)
+            returned for a given key or object type)
 
         Returns
         -------
         np_obj : numpy-typed object or None
 
         """
-        # Extract by name if name is provided and its extraction method is
+        # Extract by key if key is provided and its extraction method is
         # defined
 
-        if name is not None:
-            if name in self.unhandled_names:
-                return None
+        if key in self.unhandled_keys:
+            return None
 
-            func = self.name_converters.get(name, None)
-            if func is not None:
-                return func(obj, to_numpy=to_numpy)
+        func = self.key_converters.get(key, None)
+        if func is not None:
+            return func(obj, to_numpy=to_numpy)
 
         # Otherwise, get extraction function based on obj's type
 
@@ -462,11 +470,11 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
 
         # New unhandled type found
 
-        key_txt = " (key='{}')".format(name) if name else ""
+        key_txt = " (key='{}')".format(key) if key else ""
         print("WARNING: found new unhandled type: {}{}".format(obj_t, key_txt))
         self.unhandled_types.add(obj_t)
-        if name is not None:
-            self.unhandled_names.add(name)
+        if key is not None:
+            self.unhandled_keys.add(key)
         return None
 
     @staticmethod
@@ -582,7 +590,10 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
                 # First append all daughters found
                 for daughter in daughters:
                     info_tup, _ = self.extract_attrs(
-                        daughter, dt.I3PARTICLE_T, to_numpy=False
+                        daughter,
+                        dtype=dt.I3PARTICLE_T,
+                        dtype_descr=dt.I3PARTICLE_T_DESCR,
+                        to_numpy=False
                     )
                     flat_particles.append((level, parent_idx, info_tup))
 
@@ -634,7 +645,10 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
             omkey = (omkey.string, omkey.om, omkey.pmt)
             for pulse in pulses:
                 info_tup, _ = self.extract_attrs(
-                    pulse, dtype=dt.PULSE_T, to_numpy=False
+                    pulse,
+                    dtype=dt.PULSE_T,
+                    dtype_descr=dt.PULSE_T_DESCR,
+                    to_numpy=False,
                 )
                 flat_pulses.append((omkey, info_tup))
 
@@ -661,7 +675,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         assert len(seq) == 1
         return self.extract_object(seq[0], to_numpy=to_numpy)
 
-    def extract_attrs(self, obj, dtype, to_numpy=True):
+    def extract_attrs(self, obj, dtype, dtype_descr=None, to_numpy=True):
         """Extract attributes of an object (and optionally, recursively, attributes
         of those attributes, etc.) into a numpy.ndarray based on the specification
         provided by `dtype`.
@@ -670,6 +684,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
         ----------
         obj
         dtype : numpy.dtype
+        dtype_descr : optional
         to_numpy : bool, optional
 
         Returns
@@ -678,14 +693,15 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
 
         """
         vals = []
-        if isinstance(dtype, np.dtype):
-            descr = dtype.descr
-        elif isinstance(dtype, Sequence):
-            descr = dtype
-        else:
-            raise TypeError("{}".format(dtype))
+        if dtype_descr is None:
+            if isinstance(dtype, np.dtype):
+                dtype_descr = dtype.descr
+            elif isinstance(dtype, Sequence):
+                dtype_descr = dtype
+            else:
+                raise TypeError("{}".format(dtype))
 
-        for name, subdtype in descr:
+        for name, subdtype in dtype_descr:
             val = getattr(obj, name)
             if isinstance(subdtype, (str, np.dtype)):
                 vals.append(val)
@@ -693,15 +709,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
                 out = self.extract_object(val, to_numpy=False)
                 if out is None:
                     out = self.extract_attrs(val, subdtype, to_numpy=False)
-                assert out is not None, "{}: {} {}".format(name, subdtype, val)
-                try:
-                    info_tup, _ = out
-                except:
-                    print(obj)
-                    print(dtype)
-                    print(out)
-                    print(len(out))
-                    raise
+                info_tup, _ = out
                 vals.append(info_tup)
             else:
                 raise TypeError("{}".format(subdtype))
@@ -861,11 +869,7 @@ class I3ToNumpyConverter(object):  # pylint: disable=useless-object-inheritance
     def extract_scalar(obj, dtype, to_numpy=True):
         """Convert a scalar object."""
         val = dtype(obj.value)
-
-        if to_numpy:
-            return val
-
-        return val, dtype
+        return val if to_numpy else (val, dtype)
 
     def extract_i3domcalibration(self, obj, to_numpy=True):
         """Extract the information from an I3DOMCalibration frame object"""
