@@ -178,21 +178,30 @@ def i3_run_category_xform(path):
 
     """
     normbasename = os.path.basename(expand(path))
+
     match = regexes.I3_RUN_RE.search(normbasename)
     if not match:
         match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
     if not match:
         match = regexes.I3_RUN_DIR_RE.match(normbasename)
-    if not match:
+
+    run = None
+    with suppress(ValueError):
+        if match:
+            run_str = match.groupdict()["run"]
+            run_int = int(run_str)
+        else:
+            run_int = int(normbasename)
+        run_uint = np.uint32(run_int)
+        if run_uint == run_int:
+            run = run_uint
+
+    if run is None:
         raise ValueError(
             '`path` "{}" is incompatible with known I3 naming'
-            " conventions or has no subrun specified".format(path)
+            " conventions or has no run specified".format(path)
         )
-    run_str = match.groupdict()["run"]
-    run_int = int(run_str)
-    run = np.uint32(run_int)
-    if run != run_int:
-        raise ValueError('Invalid run {} found from path "{}"'.format(run, path))
+
     return run
 
 
@@ -220,11 +229,9 @@ def i3_subrun_category_xform(path):
             subrun_int = int(subrun_str)
         else:
             subrun_int = int(normbasename)
-        subrun = np.uint32(subrun_int)
-        if subrun != subrun_int:
-            raise ValueError(
-                'Invalid subrun {} found from path "{}"'.format(subrun, path)
-            )
+        subrun_uint = np.uint32(subrun_int)
+        if subrun_uint == subrun_int:
+            subrun = subrun_uint
 
     if subrun is None:
         raise ValueError(
@@ -584,6 +591,7 @@ def simplify_paths(paths):
             fewest_path_elements = min(fewest_path_elements, len(split_path))
 
     # TODO: when we drop py2, py3 has os.path.commonpath!
+    n_parts_common = 0
     for n_parts_common in range(fewest_path_elements):
         st = set(tuple(p[: n_parts_common + 1]) for p in split_sps)
         if len(st) != 1:
