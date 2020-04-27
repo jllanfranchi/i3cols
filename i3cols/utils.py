@@ -36,6 +36,10 @@ __all__ = [
     "nsort_key_func",
     "expand",
     "mkdir",
+    "full_path_category_xform",
+    "i3_run_category_xform",
+    "i3_subrun_category_xform",
+    "i3_run_subrun_category_xform",
     "set_explicit_dtype",
     "dict2struct",
     "maptype2np",
@@ -57,11 +61,12 @@ from numbers import Integral, Number
 import os
 import re
 import sys
+import tempfile
 
 import numpy as np
 from six import string_types
 
-from i3cols import regexes
+from i3cols import dtypes, regexes
 
 
 NSORT_RE = re.compile(r"(\d+)")
@@ -137,6 +142,176 @@ def mkdir(d, mode=0o0770):
             raise
 
     return first_created_dir
+
+
+def full_path_category_xform(path):
+    """Tranform an i3 file's path into its full path, but exclude compression
+    extensions
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    full_path : str
+
+    """
+    head, tail = os.path.split(expand(path))
+    match = regexes.I3_FNAME_RE.match(tail)
+    if match:
+        tail = match["basename"] + ".i3"
+    return os.path.join(head, tail)
+
+
+def i3_run_category_xform(path):
+    """Transform an i3 file's path into its run number
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    run : numpy scalar of dtype np.uint32
+
+    """
+    normbasename = os.path.basename(expand(path))
+
+    match = regexes.I3_RUN_RE.search(normbasename)
+    if not match:
+        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
+    if not match:
+        match = regexes.I3_RUN_DIR_RE.match(normbasename)
+
+    run = None
+    try:
+        if match:
+            run_str = match.groupdict()["run"]
+            run_int = int(run_str)
+        else:
+            run_int = int(normbasename)
+        run_uint = np.uint32(run_int)
+        if run_uint == run_int:
+            run = run_uint
+    except ValueError:
+        pass
+
+    if run is None:
+        raise ValueError(
+            '`path` "{}" is incompatible with known I3 naming'
+            " conventions or has no run specified".format(path)
+        )
+
+    return run
+
+
+def i3_subrun_category_xform(path):
+    """Transform an i3 file's path into its subrun number
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    subrun : numpy scalar of dtype np.uint32
+
+    """
+    normbasename = os.path.basename(expand(path))
+    match = regexes.I3_SUBRUN_RE.search(normbasename)
+    if not match:
+        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
+
+    subrun = None
+    try:
+        if match:
+            subrun_str = match.groupdict()["subrun"]
+            subrun_int = int(subrun_str)
+        else:
+            subrun_int = int(normbasename)
+        subrun_uint = np.uint32(subrun_int)
+        if subrun_uint == subrun_int:
+            subrun = subrun_uint
+    except ValueError:
+        pass
+
+    if subrun is None:
+        raise ValueError(
+            '`path` "{}" is incompatible with known I3 naming'
+            " conventions or has no subrun specified".format(path)
+        )
+
+    return subrun
+
+
+def i3_run_subrun_category_xform(path):
+    """Transform an i3 file's path into a tuple of (run, subrun) numbers
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    run_subrun : numpy scalar of dtype [("run", np.uint32), ("subrun", np.uint32)]
+
+    """
+    fullpath = expand(path)
+    normbasename = os.path.basename(fullpath)
+
+    run, subrun = None, None
+
+    # Search file basename for run and subrun patterns
+
+    run_match = regexes.I3_RUN_RE.search(normbasename)
+    if run_match:
+        run = np.uint32(int(run_match.groupdict()["run"]))
+
+    subrun_match = regexes.I3_SUBRUN_RE.search(normbasename)
+    if subrun_match:
+        subrun = np.uint32(int(subrun_match.groupdict()["subrun"]))
+
+    # Search oscNext file basename for run and subrun patterns
+
+    if run is None or subrun is None:
+        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
+        if match:
+            groupdict = match.groupdict()
+            if run is None:
+                run = np.uint32(int(groupdict["run"]))
+            if subrun is None:
+                subrun = np.uint32(int(groupdict["subrun"]))
+
+    # Use the full path to infer run and subnum, assuming directory structure
+    # is .../run{run}/subrun{subrun}, where directories might or might not be
+    # prefixed by strings "run" or "subrun" (they could just be, e.g.,
+    # "0001"/"0000143")
+
+    try:
+        if subrun is None:
+            subrun_dir_match = regexes.I3_SUBRUN_DIR_RE.match(normbasename)
+            if subrun_dir_match:
+                subrun = np.uint32(int(subrun_dir_match.groupdict()["subrun"]))
+
+        if run is None:
+            run_dir_match = regexes.I3_RUN_DIR_RE.match(
+                os.path.basename(os.path.dirname(fullpath))
+            )
+            if run_dir_match:
+                run = np.uint32(int(run_dir_match.groupdict()["run"]))
+    except ValueError:
+        pass
+
+    if run is None or subrun is None:
+        raise ValueError(
+            'path "{}" is incompatible with known naming'
+            " conventions or has no run and/or subrun specified".format(path)
+        )
+
+    return np.array(
+        (run, subrun), dtype=np.dtype([("run", np.uint32), ("subrun", np.uint32)])
+    )
 
 
 def set_explicit_dtype(x):
@@ -300,7 +475,14 @@ def maptype2np(mapping, dtype, to_numpy=True):
     return out_vals, dtype
 
 
-def get_widest_float_dtype(dtypes):
+FLOAT_DTYPES = tuple(
+    getattr(np, flt)
+    for flt in ["float128", "float64", "float32", "float16"]
+    if hasattr(np, flt)
+)
+
+
+def get_widest_float_dtype(dtypes):  # pylint: disable=redefined-outer-name
     """Among `dtypes` select the widest floating point type; if no floating
     point types in `dtypes`, default to numpy.float64.
 
@@ -313,17 +495,13 @@ def get_widest_float_dtype(dtypes):
     widest_float_dtype : numpy dtype
 
     """
-    float_dtypes = [np.float128, np.float64, np.float32, np.float16]
     if isinstance(dtypes, type):
         return dtypes
 
     if isinstance(dtypes, Iterable):
         dtypes = set(dtypes)
 
-    if len(dtypes) == 1:
-        return next(iter(dtypes))
-
-    for dtype in float_dtypes:
+    for dtype in FLOAT_DTYPES:
         if dtype in dtypes:
             return dtype
 
@@ -418,6 +596,7 @@ def simplify_paths(paths):
             fewest_path_elements = min(fewest_path_elements, len(split_path))
 
     # TODO: when we drop py2, py3 has os.path.commonpath!
+    n_parts_common = 0
     for n_parts_common in range(fewest_path_elements):
         st = set(tuple(p[: n_parts_common + 1]) for p in split_sps)
         if len(st) != 1:
@@ -701,3 +880,70 @@ def test_get_i3_data_fname_info():
         except Exception:
             sys.stderr.write('Failure on test input = "{}"\n'.format(test_input))
             raise
+
+
+def normalize_oscnext_I3MCWeightDict(path, tempdir, recurse=True):
+    """Remove fields that appear on only a subset of the processed oscNext
+    events (from level4 (or 5?) processing on)
+
+    Parameters
+    ----------
+    path : str
+        Path to I3MCWeightDict column directory, path to a subrun (i.e.,
+        containing the I3MCWeightDict column directory), or path to a directory
+        containing all subruns (each of which contains an I3MCWeightDict column
+        directory)
+
+    tempdir : str
+        Directory in which to store temporary intermediate arrays as the are
+        being constructed (note a new unique directory will be created within
+        this to avoid collisions with other processes)
+
+    """
+    path = expand(path)
+    tempdir = expand(tempdir)
+    mkdir(tempdir)
+
+    ref_dtype = dtypes.MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T
+    ref_names = ref_dtype.names
+
+    my_tempdir = tempfile.mkdtemp(dir=tempdir)
+    try:
+        tmp_path_old = os.path.join(my_tempdir, "I3MCWeightDict.data.old.npy")
+        tmp_path_new = os.path.join(my_tempdir, "I3MCWeightDict.data.new.npy")
+
+        def fix_and_replace(i3mcwd_coldir_path):
+            src_path = os.path.join(i3mcwd_coldir_path, "data.npy")
+            src_array = np.load(src_path, mmap_mode="r")
+            if src_array.dtype.names == ref_names:
+                return
+            print(src_path)
+            new_array = np.lib.format.open_memmap(
+                tmp_path_new, mode="w+", shape=(len(src_array),), dtype=ref_dtype
+            )
+            for name in ref_names:
+                new_array[name][:] = src_array[name][:]
+            del src_array, new_array
+            shutil.move(src_path, tmp_path_old)
+            shutil.move(tmp_path_new, src_path)
+
+        if os.path.basename(path) == "I3MCWeightDict":
+            fix_and_replace(i3mcwd_coldir_path=path)
+
+        for dirpath, dirs, _ in os.walk(path, followlinks=True):
+            if recurse:
+                dirs.sort(key=nsort_key_func)
+            else:
+                del dirs[:]
+
+            if "I3MCWeightDict" not in dirs:
+                continue
+
+            fix_and_replace(i3mcwd_coldir_path=os.path.join(dirpath, "I3MCWeightDict"))
+
+    except:
+        print('ERROR; Temporary files can be found in "{}"'.format(my_tempdir))
+        raise
+
+    else:
+        shutil.rmtree(my_tempdir)

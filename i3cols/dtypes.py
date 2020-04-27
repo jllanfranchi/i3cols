@@ -10,12 +10,14 @@ Structured dtypes for `index` column and representing IceCube data
 from __future__ import absolute_import, division, print_function
 
 __all__ = [
+    "START_STOP_T",
     "OMKEY_T",
     "I3POSITION_T",
     "I3DIRECTION_T",
     "I3OMGEO_T",
     "I3DOMCALIBRATION_T",
     "PULSE_T",
+    "PULSE_T_DESCR",
     "PHOTON_T",
     "HITS_SUMMARY_T",
     "EVT_HIT_INFO_T",
@@ -25,6 +27,7 @@ __all__ = [
     "I3TIME_T",
     "I3PARTICLEID_T",
     "I3PARTICLE_T",
+    "I3PARTICLE_T_DESCR",
     "FLAT_PARTICLE_T",
     "CRAMERRAOPARAMS_T",
     "DOMCALVERSION_T",
@@ -61,13 +64,17 @@ __all__ = [
     "I3VETO_T",
     "LINEARFIT_T",
     "SPECHARGEDISTRIBUTION_T",
-    "START_STOP_T",
     "TAUPARAM_T",
+    "MIN_GENIE_I3MCWEIGHTDICT_T",
+    "MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T",
 ]
 
 
 import numpy as np
 
+
+START_STOP_T = np.dtype([("start", np.uint64), ("stop", np.uint64)])
+"""use for index array: Start and stop indices pointing into another array"""
 
 OMKEY_T = np.dtype([("string", np.int32), ("om", np.uint32), ("pmt", np.uint8),])
 """icetray/public/icetray/OMKey.h"""
@@ -257,6 +264,8 @@ PULSE_T = np.dtype(
 )
 """dataclasses/public/dataclasses/physics/I3RecoPulse.h"""
 
+PULSE_T_DESCR = PULSE_T.descr
+
 
 FLAT_PULSE_T = np.dtype([("key", OMKEY_T), ("pulse", PULSE_T)])
 """Both omkey and pulse all in one (whereas in pulse series, omkey is a key and
@@ -386,6 +395,8 @@ I3PARTICLE_T = np.dtype(
     ]
 )
 """dataclasses/public/dataclasses/physics/I3Particle.h"""
+
+I3PARTICLE_T_DESCR = I3PARTICLE_T.descr
 
 
 I3SUPERDSTTRIGGER_T = np.dtype([("time", np.float64), ("length", np.float64)])
@@ -828,4 +839,78 @@ I3LOGLIKELIHOODFITPARAMS_T = np.dtype(
 """gulliver.I3LogLikelihoodFitParams"""
 
 
-START_STOP_T = np.dtype([("start", np.uint64), ("stop", np.uint64),])
+MIN_GENIE_I3MCWEIGHTDICT_T = np.dtype(
+    [
+        ("Crosssection", np.float64),
+        ("EnergyLost", np.float64),
+        ("GENIEWeight", np.float64),
+        ("GeneratorVolume", np.float64),
+        ("GlobalProbabilityScale", np.float64),
+        ("InjectionSurfaceR", np.float64),
+        ("InteractionProbabilityWeight", np.float64),
+        ("InteractionType", np.float64),
+        ("LengthInVolume", np.float64),
+        ("MaxAzimuth", np.float64),
+        ("MaxEnergyLog", np.float64),
+        ("MaxZenith", np.float64),
+        ("MinAzimuth", np.float64),
+        ("MinEnergyLog", np.float64),
+        ("MinZenith", np.float64),
+        ("NEvents", np.float64),
+        ("OneWeight", np.float64),
+        ("PowerLawIndex", np.float64),
+        ("PrimaryNeutrinoEnergy", np.float64),
+        ("TargetPDGCode", np.float64),
+        ("TotalDetectionLength", np.float64),
+        ("TotalInteractionProbabilityWeight", np.float64),
+    ]
+)
+
+
+MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T = np.dtype(
+    [
+        ("Crosssection", np.float64),
+        ("EnergyLost", np.float64),
+        ("GENIEWeight", np.float64),
+        ("GeneratorVolume", np.float64),
+        ("GlobalProbabilityScale", np.float64),
+        ("InjectionSurfaceR", np.float64),
+        ("InteractionProbabilityWeight", np.float64),
+        ("InteractionType", np.float64),
+        ("LengthInVolume", np.float64),
+        ("MaxAzimuth", np.float64),
+        ("MaxEnergyLog", np.float64),
+        ("MaxZenith", np.float64),
+        ("MinAzimuth", np.float64),
+        ("MinEnergyLog", np.float64),
+        ("MinZenith", np.float64),
+        ("NEvents", np.float64),
+        ("OneWeight", np.float64),
+        ("PowerLawIndex", np.float64),
+        ("PrimaryNeutrinoEnergy", np.float64),
+        ("SinglePowerLawFlux_flux", np.float64),
+        ("SinglePowerLawFlux_index", np.float64),
+        ("SinglePowerLawFlux_norm", np.float64),
+        ("SinglePowerLawFlux_weight", np.float64),
+        ("TargetPDGCode", np.float64),
+        ("TotalDetectionLength", np.float64),
+        ("TotalInteractionProbabilityWeight", np.float64),
+        ("deltacp", np.float64),
+        ("detector_depth", np.float64),
+        ("dm21", np.float64),
+        ("dm31", np.float64),
+        ("dm32", np.float64),
+        ("flux_e", np.float64),
+        ("flux_mu", np.float64),
+        ("gen_ratio", np.float64),
+        ("prob_from_nue", np.float64),
+        ("prob_from_numu", np.float64),
+        ("prop_height", np.float64),
+        ("sin2_theta12", np.float64),
+        ("sin2_theta13", np.float64),
+        ("sin2_theta23", np.float64),
+        ("weight", np.float64),
+    ]
+)
+"""Includes oscillation weights but excludes the occasionally-found fields
+'NormalizedOneWeight' and 'weight_no_osc'"""

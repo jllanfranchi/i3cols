@@ -298,10 +298,11 @@ def fit_genie_rw_syst(obj, outdtype=None, outdir=None, overwrite=False):
         coeffs = fit_coeffs[rw_syst_name]
 
         # Save time: If all y values are the same, slope (linear coeff) and
-        # curvature (quadratic coeff) are both 0. This is typically seen in MC
-        # as y values athat are all 1, but the following logic works regardless
-        # of the y value
-        all_equal_mask = np.equal.reduce(in_yvalues, axis=1)
+        # curvature (quadratic coeff) are both 0. The point (x=0, y=1) is
+        # forced to be in the  data set (see constructing `y` below), so this
+        # logic only holds if all params in the file are == 1, hence the
+        # comparison to that value
+        all_equal_mask = np.all(in_yvalues == 1, axis=1)
         coeffs[all_equal_mask] = 0
 
         for idx in np.argwhere(~all_equal_mask).flat:

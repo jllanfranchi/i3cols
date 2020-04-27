@@ -327,10 +327,11 @@ def main(description=__doc__):
 
         index_name_category_xform_map = {
             None: None,  # doesn't matter, not indexing
-            "full_path": extract.full_path_category_xform,
+            "full_path": utils.full_path_category_xform,
             "simplified_path": None,  # simplified_path is default behavior
-            "run": extract.i3_run_category_xform,
-            "subrun": extract.i3_subrun_category_xform,
+            "run": utils.i3_run_category_xform,
+            "subrun": utils.i3_subrun_category_xform,
+            "run_subrun": utils.i3_run_subrun_category_xform,
         }
 
         if index_name not in index_name_category_xform_map:
