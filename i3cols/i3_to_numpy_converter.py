@@ -66,6 +66,11 @@ def run_icetray_converter(paths, outdir, sub_event_stream, keys, exclude_keys):
     arrays : list of dict
 
     """
+    # TODO: have subprocesses import I3Tray and instantiate converter
+    # separately, then reuse these things for each subsequent "task" that is
+    # placed in the queue. This would speed up, e.g., reading separately
+    # (`i3cols.extract.extract_files_separately`) lots of small files.
+
     from I3Tray import I3Tray
 
     converter = I3ToNumpyConverter()
