@@ -84,14 +84,22 @@ from i3cols.utils import expand, mkdir, nsort_key_func
 #   If version specified, write to that or read from that. On read, if version
 #   specified but only "bare" key, load the bare key (assume it is valid across
 #   versions).
-# TODO: arrays with fewer than one entry per event: use optional masking array
-#   or reference to another column's "valid" array?
+# TODO: arrays with significantly fewer than one entry per event: use optional
+#   masking array or reference to another column's "valid" array?
 #   * Per-scalar (i.e., per-event) that live in directory like
 #     category__index.npy files makes most sense
 #   * Per-key alongside "data", "index", and "valid" arrays within key dir?
-# TODO: existing keys logic might not be working now; fix this, and account for
-#   compressed and/or decompressed files (also for overwriting when the mode of
-#   output is different from what exists)
+# TODO: allow metadata (e.g., JSON?) in each column directory; maybe also
+#   within the directory holding the columns? How to handle upon concatenation
+#   and/or splitting events up?
+#   * Can create a list of all metadata that has been combined together (never
+#     remove); then a metadata_index which essentially records "metadata entry
+#     0 applies to indices 0, 32, 45-180, ...". This also allows new metadata
+#     entries to be created appended that apply to the whole set of events,
+#     etc. Just a bit of bookkeeping that needs to be done when splitting and
+#     combining
+#   How to handle a JSON file with .npz compression of the directory?
+#   * Just store the file as bytes (np.uint8)
 
 
 CATEGORY_INDEX_POSTFIX = "__categ_index"
@@ -1098,10 +1106,58 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
     return arrays_paths
 
 
-def concatenate(paths, outdir, keys=None, index="simplified_path", mmap=True):
+def concatenate(
+    paths, outdir, keys=None, exclude_keys=None, index_name=None, category_xform=None,
+):
+    """
+    Parameters
+    ----------
+    paths : str or iterable thereof
+        Look within each directory defined in `paths` to find column stores
+        (either .npz files or directories containing "data.npy", etc. files) to
+        concatenate. If no column stores are found there, look in any
+        subdirectories found within each path in `paths`.
+
+    outdir : str
+    keys :
+    exclude_keys :
+    index_name : str or None, optional
+    category_xform : callable or None, optional
+
+    """
+    # TODO: Allow paths to individual column store(s) (.npz file or directory
+    #   containing "data.npy", etc.) to be concatenated? (requires copying over
+    #   category indexes, etc., from same director(ies)...)
+
     if isinstance(paths, string_types):
         paths = [paths]
     paths = [expand(path) for path in paths]
+
+    to_concat = OrderedDict()
+
+    for path in paths:
+        arrays, category_indexes = find_array_paths(path, keys, exclude_keys)
+        if arrays or category_indexes:
+            category = category_xform(path)
+            to_concat[category] = (arrays, category_indexes)
+            continue
+
+        subdirs = (os.path.join(path, d) for d in os.listdir(path))
+        subdirs = [d for d in subdirs if os.path.isdir(d)]
+
+        for subdir in subdirs:
+            arrays, category_indexes = find_array_paths(subdir, keys, exclude_keys)
+            if arrays or category_indexes:
+                category = category_xform(subdir)
+                to_concat[category] = (arrays, category_indexes)
+
+    category_array_map = OrderedDict(
+        (category, val[0]) for category, val in sorted(to_concat.items())
+    )
+
+    concatenate_and_index_cols(
+        category_array_map=category_array_map, index_name=index_name, outdir=outdir,
+    )
 
 
 def concatenate_and_index_cols(
@@ -1145,7 +1201,7 @@ def concatenate_and_index_cols(
         Minimally contains key `index_name` with value a
         shape-(num_categories,) numpy ndarray of custom dtype .. ::
 
-            [(index_name, category_dtype), ("index", retro_types.START_STOP_T)]
+            [(index_name, category_dtype), ("index", dtypes.START_STOP_T)]
 
     arrays : dict of dicts containing arrays
 

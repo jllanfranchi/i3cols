@@ -76,16 +76,18 @@ I3_LEVEL_LEVELVER_RE = re.compile(
 
 I3_PASS_RE = re.compile("pass(?P<pass>[0-9][a-z]?)", flags=re.IGNORECASE)
 
-I3_RUN_RE = re.compile(r"Run(?P<run>[0-9]+)", flags=re.IGNORECASE)
+I3_RUN_RE = re.compile(r"(?<!sub)(?<!sub[._ -])run(?P<run>[0-9]+)", flags=re.IGNORECASE)
 
 I3_SUBRUN_RE = re.compile("subrun(?P<subrun>[0-9]+(_[0-9]+)?)", flags=re.IGNORECASE)
 
 I3_PART_RE = re.compile("part(?P<part>[0-9]+)", flags=re.IGNORECASE)
 
-I3_SUBRUN_DIR_RE = re.compile(r"(?P<pfx>subrun)(?P<subrun>[0-9]+)", flags=re.IGNORECASE)
+I3_SUBRUN_DIR_RE = re.compile(
+    r"^(?P<pfx>subrun)(?P<subrun>[0-9]+)$", flags=re.IGNORECASE
+)
 """Matches MC "run" dirs, e.g. '140000' & data run dirs, e.g. 'Run00125177'"""
 
-I3_RUN_DIR_RE = re.compile(r"(?P<pfx>Run)?(?P<run>[0-9]+)", flags=re.IGNORECASE)
+I3_RUN_DIR_RE = re.compile(r"^(?P<pfx>run)?(?P<run>[0-9]+)$", flags=re.IGNORECASE)
 """Matches MC "run" dirs, e.g. '140000' & data run dirs, e.g. 'Run00125177'"""
 
 IC_SEASON_DIR_RE = re.compile(

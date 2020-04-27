@@ -32,9 +32,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE."""
 
 __all__ = [
-    "full_path_category_xform",
-    "i3_run_category_xform",
-    "i3_subrun_category_xform",
     "find_gcd_for_data_file",
     "extract_files_separately",
     "extract_files_as_one",
@@ -48,6 +45,7 @@ try:
     from collections.abc import Iterable
 except ImportError:
     from collections import Iterable
+from contextlib import suppress
 from multiprocessing import Pool
 import os
 import re
@@ -73,76 +71,6 @@ except ImportError:
 # TODO: use logging module
 # TODO: profile ... record time(s) to extract key name and times per type
 # TODO: add compress tasks to existing pool that is handling extraction
-
-
-def full_path_category_xform(path):
-    """Tranform an i3 file's path into its full path, but exclude compression
-    extensions
-
-    Parameters
-    ----------
-    path : str
-
-    Returns
-    -------
-    full_path : str
-
-    """
-    head, tail = os.path.split(utils.expand(path))
-    match = regexes.I3_FNAME_RE.match(tail)
-    if match:
-        tail = match["basename"] + ".i3"
-    return os.path.join(head, tail)
-
-
-def i3_run_category_xform(path):
-    """Transform an i3 file's path into its run number
-
-    Parameters
-    ----------
-    path : str
-
-    Returns
-    -------
-    run : scalar of dtype np.uint32
-
-    """
-    normbasename = os.path.basename(utils.expand(path))
-    match = regexes.I3_RUN_RE.search(normbasename)
-    if not match:
-        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
-    if not match:
-        match = regexes.I3_RUN_DIR_RE.match(normbasename)
-    if not match:
-        raise ValueError(
-            'path "{}" is incompatible with known I3 naming'
-            " conventions or has no subrun specified".format(path)
-        )
-    return np.uint32(match.groupdict()["run"])
-
-
-def i3_subrun_category_xform(path):
-    """Transform an i3 file's path into its subrun number
-
-    Parameters
-    ----------
-    path : str
-
-    Returns
-    -------
-    subrun : scalar of dtype np.uint32
-
-    """
-    normbasename = os.path.basename(utils.expand(path))
-    match = regexes.I3_SUBRUN_RE.search(normbasename)
-    if not match:
-        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
-    if not match:
-        raise ValueError(
-            'path "{}" is incompatible with known I3 naming'
-            " conventions or has no subrun specified".format(path)
-        )
-    return np.uint32(match.groupdict()["subrun"])
 
 
 def find_gcd_for_data_file(datafilepath, gcd_dir, recurse=True):
@@ -421,7 +349,7 @@ def extract_files_separately(
             if isinstance(category, string_types):
                 category_dirname = category
             elif isinstance(category, Iterable):
-                category_dirname = os.path.join(*[str(x) for x in category])
+                category_dirname = os.path.join(*(str(x) for x in category))
             else:
                 category_dirname = index_name + str(category)
 
@@ -745,12 +673,12 @@ def extract_season(
 
     run_dirpaths = []
     for basepath in sorted(os.listdir(path), key=utils.nsort_key_func):
-        match = regexes.I3_RUN_DIR_RE.search(basepath)
-        if not match:
+        run = None
+        with suppress(ValueError):
+            run = utils.i3_run_category_xform(basepath)
+        if run is None:
             continue
-        groupdict = match.groupdict()
-        run_int = np.uint32(int(groupdict["run"]))
-        run_dirpaths.append((run_int, os.path.join(path, basepath)))
+        run_dirpaths.append((run, os.path.join(path, basepath)))
     # Sort ascending by numeric run number
     run_dirpaths.sort()
 
@@ -914,7 +842,7 @@ def combine_runs_or_subruns(path, outdir, keys=None, mmap=True):
         already-extracted arrays
 
     outdir : str
-        Store concatenated arrays to this directory
+        Store concatenated column directories or .npz files in this directory
 
     keys : str, iterable thereof, or None; optional
         Only preserver these keys. If None, preserve all keys found in all
@@ -936,7 +864,7 @@ def combine_runs_or_subruns(path, outdir, keys=None, mmap=True):
         subpath = os.path.join(path, subname)
         if not os.path.isdir(subpath):
             continue
-        match = regexes.I3_RUN_DIR_RE.search(subname)
+        match = regexes.I3_RUN_DIR_RE.match(subname)
         if not match:
             continue
         groupdict = match.groupdict()
