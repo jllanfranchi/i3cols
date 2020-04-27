@@ -55,7 +55,6 @@ try:
 except ImportError:
     from collections import Iterable
 from collections import OrderedDict
-from contextlib import suppress
 from copy import deepcopy
 import errno
 from numbers import Integral, Number
@@ -186,7 +185,7 @@ def i3_run_category_xform(path):
         match = regexes.I3_RUN_DIR_RE.match(normbasename)
 
     run = None
-    with suppress(ValueError):
+    try:
         if match:
             run_str = match.groupdict()["run"]
             run_int = int(run_str)
@@ -195,6 +194,8 @@ def i3_run_category_xform(path):
         run_uint = np.uint32(run_int)
         if run_uint == run_int:
             run = run_uint
+    except ValueError:
+        pass
 
     if run is None:
         raise ValueError(
@@ -223,7 +224,7 @@ def i3_subrun_category_xform(path):
         match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
 
     subrun = None
-    with suppress(ValueError):
+    try:
         if match:
             subrun_str = match.groupdict()["subrun"]
             subrun_int = int(subrun_str)
@@ -232,6 +233,8 @@ def i3_subrun_category_xform(path):
         subrun_uint = np.uint32(subrun_int)
         if subrun_uint == subrun_int:
             subrun = subrun_uint
+    except ValueError:
+        pass
 
     if subrun is None:
         raise ValueError(
@@ -285,7 +288,7 @@ def i3_run_subrun_category_xform(path):
     # prefixed by strings "run" or "subrun" (they could just be, e.g.,
     # "0001"/"0000143")
 
-    with suppress(Exception):
+    try:
         if subrun is None:
             subrun_dir_match = regexes.I3_SUBRUN_DIR_RE.match(normbasename)
             if subrun_dir_match:
@@ -297,6 +300,8 @@ def i3_run_subrun_category_xform(path):
             )
             if run_dir_match:
                 run = np.uint32(int(run_dir_match.groupdict()["run"]))
+    except ValueError:
+        pass
 
     if run is None or subrun is None:
         raise ValueError(

@@ -45,7 +45,6 @@ try:
     from collections.abc import Iterable
 except ImportError:
     from collections import Iterable
-from contextlib import suppress
 from multiprocessing import Pool
 import os
 import re
@@ -674,8 +673,10 @@ def extract_season(
     run_dirpaths = []
     for basepath in sorted(os.listdir(path), key=utils.nsort_key_func):
         run = None
-        with suppress(ValueError):
+        try:
             run = utils.i3_run_category_xform(basepath)
+        except ValueError:
+            pass
         if run is None:
             continue
         run_dirpaths.append((run, os.path.join(path, basepath)))
