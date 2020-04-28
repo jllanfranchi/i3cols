@@ -76,8 +76,9 @@ from i3cols import dtypes, regexes
 NSORT_RE = re.compile(r"(\d+)")
 
 
-nsort_split_str = lambda s: tuple(
-    v if i % 2 == 0 else int(v) for i, v in enumerate(NSORT_RE.split(s)) if v
+nsort_split_str = lambda s: "".join(
+    v.rjust(40) if i % 2 == 0 else format(int(v), "040d")
+    for i, v in enumerate(NSORT_RE.split(s)) if v
 )
 
 
