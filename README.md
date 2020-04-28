@@ -16,10 +16,10 @@ pip install --user i3cols
 
 and then the installed binary will be located at, e.g., `$HOME/.local/bin/i3cols`; add `$HOME/.local/bin` to your `PATH` to avoid having to type that full path every time (but reset your `PATH` if you switch out of CVMFS)
 
-i3cols has two major pieces: i3 file data extraction and subsequent operations on the extracted data. If all you need to do is the former, and e.g. CVMFS-based Python is having problems installing Numba, you can get away with installing enum34 manually and then using `--no-deps` flag to `pip` such that Numba is not installed:
+i3cols has two major pieces: i3 file data extraction and subsequent operations on the extracted data. If all you need to do is the former, and e.g. CVMFS-based Python is having problems installing Numba, you can get away with installing enum34 manually (if using Python 2) and then using `--no-deps` flag to `pip` such that Numba is not installed:
 
 ```
-pip install --user enum34
+pip install --user enum34  # Only do this if using Python < 3.4
 pip install --user --no-deps i3cols
 ```
 
