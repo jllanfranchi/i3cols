@@ -24,7 +24,7 @@ if sys.version_info < (3, 4):
 
 setup(
     name="i3cols",
-    version="0.1.3",
+    version="0.1.4",
     author="Justin L. Lanfranchi",
     author_email="jll1062@phys.psu.edu",
     description="Numpy columnar storage for IceCube data",

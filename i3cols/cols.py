@@ -59,11 +59,11 @@ try:
     )
 except ImportError:
     from collections import Mapping, MutableMapping, MutableSequence, Sequence
-from copy import deepcopy
-from enum import IntEnum
+import copy
+import enum
 import fnmatch
 import functools
-from multiprocessing import Pool
+import multiprocessing
 import operator
 import os
 import re
@@ -74,9 +74,7 @@ import time
 import numpy as np
 from six import string_types
 
-from i3cols import dtypes as dt
-from i3cols import regexes
-from i3cols.utils import expand, mkdir, nsort_key_func
+from i3cols import dtypes, regexes, utils
 
 
 # TODO: optional npz compression/decompression of key dirs built-in to functions
@@ -113,7 +111,7 @@ ARRAY_FNAMES = {n: "{}.npy".format(n) for n in LEGAL_ARRAY_NAMES}
 """Basic npy filenames associated with each legal (recoginzed) array"""
 
 
-class MatchSpecialCase(IntEnum):
+class MatchSpecialCase(enum.IntEnum):
     """Special cases for `keys` and `exclude_keys` matching keys"""
 
     UNKNOWN = -1
@@ -158,7 +156,7 @@ def save_item(path, key, data, valid=None, index=None, overwrite=False):
     overwrite : bool, optional
 
     """
-    path = expand(path)
+    path = utils.expand(path)
     if os.path.exists(path):
         assert os.path.isdir(path)
         if not overwrite:
@@ -173,7 +171,7 @@ def save_item(path, key, data, valid=None, index=None, overwrite=False):
     outdirpath = os.path.join(path, key)
 
     outfpaths_saved = []
-    parent_outdir_created = mkdir(outdirpath)
+    parent_outdir_created = utils.mkdir(outdirpath)
     try:
         outfpaths_arrays = []
         for name, array in [("data", data), ("valid", valid), ("index", index)]:
@@ -202,7 +200,7 @@ def save_item(path, key, data, valid=None, index=None, overwrite=False):
 def check_outdir_and_keys(outdir=None, outkeys=None, overwrite=False):
     """Validate `outdir` and determine if files would be overwritten"""
     if outdir is not None:
-        outdir = expand(outdir)
+        outdir = utils.expand(outdir)
         if os.path.exists(outdir):
             assert os.path.isdir(outdir)
 
@@ -232,7 +230,7 @@ def filter_keys_from_existing(outdir, keys=None, exclude_keys=None):
     nothing_to_do : bool
 
     """
-    outdir = expand(outdir)
+    outdir = utils.expand(outdir)
     if os.path.isdir(outdir):
         existing_cols, _ = find_array_paths(
             path=outdir, keys=keys, exclude_keys=exclude_keys
@@ -299,7 +297,7 @@ def _generate_key_match_function(info):
     return functools.partial(
         _is_key_match_protofunc,
         key_funcs=tuple(f for f in info["key_funcs"]),
-        named_keys=deepcopy(info["named_keys"]),
+        named_keys=copy.deepcopy(info["named_keys"]),
         rgxs=tuple(
             re.compile(fnmatch.translate(pattern), flags=re.IGNORECASE)
             for pattern in sorted(info["glob_patterns"])
@@ -357,8 +355,8 @@ def expand_keys(keys, exclude_keys):
 
             # All other cases: key must be a string
 
-            elif os.path.isfile(expand(key)):
-                abspath = expand(key)
+            elif os.path.isfile(utils.expand(key)):
+                abspath = utils.expand(key)
                 if abspath in files_read:
                     continue
                 files_read.add(abspath)
@@ -522,7 +520,7 @@ def find_array_paths(path, keys=None, exclude_keys=None):
 
     """
     orig_path = path
-    path = expand(orig_path)
+    path = utils.expand(orig_path)
 
     is_key_valid = get_valid_key_func(keys=keys, exclude_keys=exclude_keys)
 
@@ -550,7 +548,7 @@ def find_array_paths(path, keys=None, exclude_keys=None):
         path = os.path.dirname(path)
         is_key_valid = get_valid_key_func(keys=key_name)
 
-    dir_listing = sorted(os.listdir(path), key=nsort_key_func)
+    dir_listing = sorted(os.listdir(path), key=utils.nsort_key_func)
 
     for name in dir_listing:
         subpath = os.path.join(path, name)
@@ -717,7 +715,7 @@ def compress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, proc
     """
     if isinstance(paths, string_types):
         paths = [paths]
-    paths = [expand(p) for p in paths]
+    paths = [utils.expand(p) for p in paths]
     for path in paths:
         assert os.path.isdir(path), path
 
@@ -725,13 +723,13 @@ def compress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, proc
 
     pool = None
     if procs > 1:
-        pool = Pool(procs)
+        pool = multiprocessing.Pool(procs)
 
     try:
         for path in paths:
             for dirpath, dirs, files in os.walk(path):
                 if recurse:
-                    dirs.sort(key=nsort_key_func)
+                    dirs.sort(key=utils.nsort_key_func)
                 else:
                     del dirs[:]
                 if (
@@ -742,7 +740,7 @@ def compress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, proc
                 ):
                     continue
 
-                args = (dirpath, deepcopy(files), keep)
+                args = (dirpath, copy.deepcopy(files), keep)
                 if procs == 1:
                     _compress(*args)
                 else:
@@ -810,13 +808,13 @@ def decompress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, pr
     """
     if isinstance(paths, string_types):
         paths = [paths]
-    paths = [expand(p) for p in paths]
+    paths = [utils.expand(p) for p in paths]
 
     is_key_valid = get_valid_key_func(keys=keys, exclude_keys=exclude_keys)
 
     pool = None
     if procs > 1:
-        pool = Pool(procs)
+        pool = multiprocessing.Pool(procs)
 
     try:
         for path in paths:
@@ -840,7 +838,7 @@ def decompress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, pr
 
             for dirpath, dirnames, filenames in os.walk(path):
                 if recurse:
-                    dirnames.sort(key=nsort_key_func)
+                    dirnames.sort(key=utils.nsort_key_func)
                 else:
                     del dirnames[:]
 
@@ -909,7 +907,7 @@ def _decompress(dirpath, filename, keep):
     # sys.stdout.flush()
 
     subfilepaths_created = []
-    parent_dir_created = mkdir(keydirpath)
+    parent_dir_created = utils.mkdir(keydirpath)
     try:
         for array_name, array in array_d.items():
             arraypath = os.path.join(keydirpath, array_name + ".npy")
@@ -958,8 +956,8 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
 
     parent_outdir_created = None
     if isinstance(outdir, string_types):
-        outdir = expand(outdir)
-        parent_outdir_created = mkdir(outdir)
+        outdir = utils.expand(outdir)
+        parent_outdir_created = utils.mkdir(outdir)
 
     try:
 
@@ -999,7 +997,7 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
             # `key`), the "valid" mask array is omitted
             if outdir is not None:
                 dpath = os.path.join(outdir, key)
-                mkdir(dpath)
+                utils.mkdir(dpath)
                 data_array_path = os.path.join(dpath, "data.npy")
                 scalar_arrays_paths[key] = dict(data=data_array_path)
                 data_array = np.lib.format.open_memmap(
@@ -1017,7 +1015,7 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
         for key, (length, dtype) in vector_dtypes.items():
             if outdir is not None:
                 dpath = os.path.join(outdir, key)
-                mkdir(dpath)
+                utils.mkdir(dpath)
                 data_array_path = os.path.join(dpath, "data.npy")
                 index_array_path = os.path.join(dpath, "index.npy")
                 vector_arrays_paths[key] = dict(
@@ -1030,11 +1028,11 @@ def construct_arrays(data, delete_while_filling=False, outdir=None):
                     index_array_path,
                     mode="w+",
                     shape=(num_frames,),
-                    dtype=dt.START_STOP_T,
+                    dtype=dtypes.START_STOP_T,
                 )
             else:
                 data_array = np.empty(shape=(length,), dtype=dtype)
-                index_array = np.empty(shape=(num_frames,), dtype=dt.START_STOP_T)
+                index_array = np.empty(shape=(num_frames,), dtype=dtypes.START_STOP_T)
             vector_arrays[key] = dict(data=data_array, index=index_array)
 
         # Fill the arrays
@@ -1129,17 +1127,23 @@ def concatenate(
     #   containing "data.npy", etc.) to be concatenated? (requires copying over
     #   category indexes, etc., from same director(ies)...)
 
+    # Normalize args
+
     if isinstance(paths, string_types):
         paths = [paths]
-    paths = [expand(path) for path in paths]
+    paths = [utils.expand(path) for path in paths]
+
+    index_name, category_xform, category_is_global = utils.handle_category_index_args(
+        index_name=index_name, category_xform=category_xform
+    )
+
+    # Find paths to concatenate
 
     to_concat = OrderedDict()
-
     for path in paths:
         arrays, category_indexes = find_array_paths(path, keys, exclude_keys)
         if arrays or category_indexes:
-            category = category_xform(path)
-            to_concat[category] = (arrays, category_indexes)
+            to_concat[path] = (arrays, category_indexes)
             continue
 
         subdirs = (os.path.join(path, d) for d in os.listdir(path))
@@ -1148,15 +1152,32 @@ def concatenate(
         for subdir in subdirs:
             arrays, category_indexes = find_array_paths(subdir, keys, exclude_keys)
             if arrays or category_indexes:
-                category = category_xform(subdir)
-                to_concat[category] = (arrays, category_indexes)
+                to_concat[subdir] = (arrays, category_indexes)
+
+    # Create a properly-sorted list of (category, path) tuples
+
+    if category_is_global:
+        all_paths = list(to_concat.keys())
+        # Note that sorting is performed by (category, path)
+        category_path_map = sorted(
+            zip(category_xform(all_paths), all_paths), key=utils.nsort_key_func
+        )
+    else:
+        category_path_map = sorted(
+            ((category_xform(path), path) for path in to_concat.keys()),
+            key=utils.nsort_key_func,
+        )
+
+    # Make `category_array_map` (include arrays, exclude category_indexes)
 
     category_array_map = OrderedDict(
-        (category, val[0]) for category, val in sorted(to_concat.items())
+        (category, to_concat[path][0]) for category, path in category_path_map
     )
 
+    # Perform the concatenation
+
     concatenate_and_index_cols(
-        category_array_map=category_array_map, index_name=index_name, outdir=outdir,
+        category_array_map=category_array_map, index_name=index_name, outdir=outdir
     )
 
 
@@ -1216,8 +1237,8 @@ def concatenate_and_index_cols(
 
     parent_outdir_created = None
     if outdir is not None:
-        outdir = expand(outdir)
-        parent_outdir_created = mkdir(outdir)
+        outdir = utils.expand(outdir)
+        parent_outdir_created = utils.mkdir(outdir)
 
     try:
 
@@ -1324,7 +1345,7 @@ def concatenate_and_index_cols(
         categories = np.array(list(category_array_map.keys()), dtype=category_dtype)
         category_dtype = categories.dtype
         category_index_dtype = np.dtype(
-            [(index_name, category_dtype), ("index", dt.START_STOP_T)]
+            [(index_name, category_dtype), ("index", dtypes.START_STOP_T)]
         )
         if outdir is not None:
             category_index = np.lib.format.open_memmap(
@@ -1345,7 +1366,7 @@ def concatenate_and_index_cols(
             zip(categories, category_scalar_array_lens.values())
         ):
             stop = start + array_len
-            value = np.array([(start, stop)], dtype=dt.START_STOP_T)[0]
+            value = np.array([(start, stop)], dtype=dtypes.START_STOP_T)[0]
             category_index[i] = (category, value)
             start = stop
 
@@ -1377,7 +1398,7 @@ def concatenate_and_index_cols(
 
             if outdir is not None:
                 dpath = os.path.join(outdir, key)
-                mkdir(dpath)
+                utils.mkdir(dpath)
                 data = np.lib.format.open_memmap(
                     os.path.join(dpath, "data.npy"),
                     mode="w+",
@@ -1393,7 +1414,7 @@ def concatenate_and_index_cols(
             if key in keys_requiring_valid_array:
                 if outdir is not None:
                     dpath = os.path.join(outdir, key)
-                    mkdir(dpath)
+                    utils.mkdir(dpath)
                     valid = np.lib.format.open_memmap(
                         os.path.join(dpath, "valid.npy"),
                         mode="w+",
@@ -1409,12 +1430,12 @@ def concatenate_and_index_cols(
             if key in vector_keys:
                 if outdir is not None:
                     dpath = os.path.join(outdir, key)
-                    mkdir(dpath)
+                    utils.mkdir(dpath)
                     index = np.lib.format.open_memmap(
                         os.path.join(dpath, "index.npy"),
                         mode="w+",
                         shape=(total_scalar_len,),
-                        dtype=dt.START_STOP_T,
+                        dtype=dtypes.START_STOP_T,
                     )
                 else:
                     index = np.empty(shape=(total_scalar_len,), dtype=np.bool8)

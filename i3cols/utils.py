@@ -40,6 +40,10 @@ __all__ = [
     "i3_run_category_xform",
     "i3_subrun_category_xform",
     "i3_run_subrun_category_xform",
+    "LOCAL_CATEGORY_XFORMS",
+    "GLOBAL_CATEGORY_XFORMS",
+    "ALL_CATEGORY_XFORMS",
+    "handle_category_index_args",
     "set_explicit_dtype",
     "dict2struct",
     "maptype2np",
@@ -72,21 +76,48 @@ from i3cols import dtypes, regexes
 NSORT_RE = re.compile(r"(\d+)")
 
 
+nsort_split_str = lambda s: tuple(
+    v if i % 2 == 0 else int(v) for i, v in enumerate(NSORT_RE.split(s)) if v
+)
+
+
 def nsort_key_func(s):
-    """Use as the `key` argument to the `sorted` function or `sort` method.
+    """Break strings and strings within iterables up into integral and
+    non-integral parts, e.g. for sorting version strings.
+
+    Use as the `key` argument to the `sorted` function or `sort` method.
 
     Code adapted from nedbatchelder.com/blog/200712/human_sorting.html#comments
 
     Examples
     --------
+    Comparing sort without then with `key=nsort_key_func` for typical
+    versioning schme
+
     >>> l = ['f1.10.0.txt', 'f1.01.2.txt', 'f1.1.1.txt', 'f9.txt', 'f10.txt']
+    >>> sorted(l)
+    ['f1.01.2.txt', 'f1.1.1.txt', 'f1.10.0.txt', 'f10.txt', 'f9.txt']
+
     >>> sorted(l, key=nsort_key_func)
     ['f1.1.1.txt', 'f1.01.2.txt', 'f1.10.0.txt', 'f9.txt', 'f10.txt']
 
+    Strings can be the values being sorted (as above) or (immediately) within
+    an iterable
+
+    >>> l = [(2, 'f2.txt'), (2, 'f10.txt'), (1, 'f2.txt'), (1, 'f10.txt')]
+    >>> sorted(l, key=nsort_key_func)
+    [(1, 'f2.txt'), (1, 'f10.txt'), (2, 'f2.txt'), (2, 'f10.txt')]
+
     """
-    return tuple(
-        val if i % 2 == 0 else int(val) for i, val in enumerate(NSORT_RE.split(s))
-    )
+    if isinstance(s, string_types):
+        return nsort_split_str(s)
+
+    if isinstance(s, Iterable):
+        return tuple(
+            nsort_split_str(x) if isinstance(x, string_types) else x for x in s
+        )
+
+    return s
 
 
 def expand(p):
@@ -142,176 +173,6 @@ def mkdir(d, mode=0o0770):
             raise
 
     return first_created_dir
-
-
-def full_path_category_xform(path):
-    """Tranform an i3 file's path into its full path, but exclude compression
-    extensions
-
-    Parameters
-    ----------
-    path : str
-
-    Returns
-    -------
-    full_path : str
-
-    """
-    head, tail = os.path.split(expand(path))
-    match = regexes.I3_FNAME_RE.match(tail)
-    if match:
-        tail = match["basename"] + ".i3"
-    return os.path.join(head, tail)
-
-
-def i3_run_category_xform(path):
-    """Transform an i3 file's path into its run number
-
-    Parameters
-    ----------
-    path : str
-
-    Returns
-    -------
-    run : numpy scalar of dtype np.uint32
-
-    """
-    normbasename = os.path.basename(expand(path))
-
-    match = regexes.I3_RUN_RE.search(normbasename)
-    if not match:
-        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
-    if not match:
-        match = regexes.I3_RUN_DIR_RE.match(normbasename)
-
-    run = None
-    try:
-        if match:
-            run_str = match.groupdict()["run"]
-            run_int = int(run_str)
-        else:
-            run_int = int(normbasename)
-        run_uint = np.uint32(run_int)
-        if run_uint == run_int:
-            run = run_uint
-    except ValueError:
-        pass
-
-    if run is None:
-        raise ValueError(
-            '`path` "{}" is incompatible with known I3 naming'
-            " conventions or has no run specified".format(path)
-        )
-
-    return run
-
-
-def i3_subrun_category_xform(path):
-    """Transform an i3 file's path into its subrun number
-
-    Parameters
-    ----------
-    path : str
-
-    Returns
-    -------
-    subrun : numpy scalar of dtype np.uint32
-
-    """
-    normbasename = os.path.basename(expand(path))
-    match = regexes.I3_SUBRUN_RE.search(normbasename)
-    if not match:
-        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
-
-    subrun = None
-    try:
-        if match:
-            subrun_str = match.groupdict()["subrun"]
-            subrun_int = int(subrun_str)
-        else:
-            subrun_int = int(normbasename)
-        subrun_uint = np.uint32(subrun_int)
-        if subrun_uint == subrun_int:
-            subrun = subrun_uint
-    except ValueError:
-        pass
-
-    if subrun is None:
-        raise ValueError(
-            '`path` "{}" is incompatible with known I3 naming'
-            " conventions or has no subrun specified".format(path)
-        )
-
-    return subrun
-
-
-def i3_run_subrun_category_xform(path):
-    """Transform an i3 file's path into a tuple of (run, subrun) numbers
-
-    Parameters
-    ----------
-    path : str
-
-    Returns
-    -------
-    run_subrun : numpy scalar of dtype [("run", np.uint32), ("subrun", np.uint32)]
-
-    """
-    fullpath = expand(path)
-    normbasename = os.path.basename(fullpath)
-
-    run, subrun = None, None
-
-    # Search file basename for run and subrun patterns
-
-    run_match = regexes.I3_RUN_RE.search(normbasename)
-    if run_match:
-        run = np.uint32(int(run_match.groupdict()["run"]))
-
-    subrun_match = regexes.I3_SUBRUN_RE.search(normbasename)
-    if subrun_match:
-        subrun = np.uint32(int(subrun_match.groupdict()["subrun"]))
-
-    # Search oscNext file basename for run and subrun patterns
-
-    if run is None or subrun is None:
-        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
-        if match:
-            groupdict = match.groupdict()
-            if run is None:
-                run = np.uint32(int(groupdict["run"]))
-            if subrun is None:
-                subrun = np.uint32(int(groupdict["subrun"]))
-
-    # Use the full path to infer run and subnum, assuming directory structure
-    # is .../run{run}/subrun{subrun}, where directories might or might not be
-    # prefixed by strings "run" or "subrun" (they could just be, e.g.,
-    # "0001"/"0000143")
-
-    try:
-        if subrun is None:
-            subrun_dir_match = regexes.I3_SUBRUN_DIR_RE.match(normbasename)
-            if subrun_dir_match:
-                subrun = np.uint32(int(subrun_dir_match.groupdict()["subrun"]))
-
-        if run is None:
-            run_dir_match = regexes.I3_RUN_DIR_RE.match(
-                os.path.basename(os.path.dirname(fullpath))
-            )
-            if run_dir_match:
-                run = np.uint32(int(run_dir_match.groupdict()["run"]))
-    except ValueError:
-        pass
-
-    if run is None or subrun is None:
-        raise ValueError(
-            'path "{}" is incompatible with known naming'
-            " conventions or has no run and/or subrun specified".format(path)
-        )
-
-    return np.array(
-        (run, subrun), dtype=np.dtype([("run", np.uint32), ("subrun", np.uint32)])
-    )
 
 
 def set_explicit_dtype(x):
@@ -603,6 +464,236 @@ def simplify_paths(paths):
             break
 
     return [os.path.sep.join(p[n_parts_common:]).lstrip("/") for p in split_sps]
+
+
+def full_path_category_xform(path):
+    """Tranform an i3 file's path into its full path, but exclude compression
+    extensions
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    full_path : str
+
+    """
+    head, tail = os.path.split(expand(path))
+    match = regexes.I3_FNAME_RE.match(tail)
+    if match:
+        tail = match["basename"] + ".i3"
+    return os.path.join(head, tail)
+
+
+def i3_run_category_xform(path):
+    """Transform an i3 file's path into its run number
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    run : numpy scalar of dtype np.uint32
+
+    """
+    normbasename = os.path.basename(expand(path))
+
+    match = regexes.I3_RUN_RE.search(normbasename)
+    if not match:
+        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
+    if not match:
+        match = regexes.I3_RUN_DIR_RE.match(normbasename)
+
+    run = None
+    try:
+        if match:
+            run_str = match.groupdict()["run"]
+            run_int = int(run_str)
+        else:
+            run_int = int(normbasename)
+        run_uint = np.uint32(run_int)
+        if run_uint == run_int:
+            run = run_uint
+    except ValueError:
+        pass
+
+    if run is None:
+        raise ValueError(
+            '`path` "{}" is incompatible with known I3 naming'
+            " conventions or has no run specified".format(path)
+        )
+
+    return run
+
+
+def i3_subrun_category_xform(path):
+    """Transform an i3 file's path into its subrun number
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    subrun : numpy scalar of dtype np.uint32
+
+    """
+    normbasename = os.path.basename(expand(path))
+    match = regexes.I3_SUBRUN_RE.search(normbasename)
+    if not match:
+        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
+
+    subrun = None
+    try:
+        if match:
+            subrun_str = match.groupdict()["subrun"]
+            subrun_int = int(subrun_str)
+        else:
+            subrun_int = int(normbasename)
+        subrun_uint = np.uint32(subrun_int)
+        if subrun_uint == subrun_int:
+            subrun = subrun_uint
+    except ValueError:
+        pass
+
+    if subrun is None:
+        raise ValueError(
+            '`path` "{}" is incompatible with known I3 naming'
+            " conventions or has no subrun specified".format(path)
+        )
+
+    return subrun
+
+
+def i3_run_subrun_category_xform(path):
+    """Transform an i3 file's path into a tuple of (run, subrun) numbers
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    run_subrun : numpy scalar of dtype [("run", np.uint32), ("subrun", np.uint32)]
+
+    """
+    fullpath = expand(path)
+    normbasename = os.path.basename(fullpath)
+
+    run, subrun = None, None
+
+    # Search file basename for run and subrun patterns
+
+    run_match = regexes.I3_RUN_RE.search(normbasename)
+    if run_match:
+        run = np.uint32(int(run_match.groupdict()["run"]))
+
+    subrun_match = regexes.I3_SUBRUN_RE.search(normbasename)
+    if subrun_match:
+        subrun = np.uint32(int(subrun_match.groupdict()["subrun"]))
+
+    # Search oscNext file basename for run and subrun patterns
+
+    if run is None or subrun is None:
+        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
+        if match:
+            groupdict = match.groupdict()
+            if run is None:
+                run = np.uint32(int(groupdict["run"]))
+            if subrun is None:
+                subrun = np.uint32(int(groupdict["subrun"]))
+
+    # Use the full path to infer run and subnum, assuming directory structure
+    # is .../run{run}/subrun{subrun}, where directories might or might not be
+    # prefixed by strings "run" or "subrun" (they could just be, e.g.,
+    # "0001"/"0000143")
+
+    try:
+        if subrun is None:
+            subrun_dir_match = regexes.I3_SUBRUN_DIR_RE.match(normbasename)
+            if subrun_dir_match:
+                subrun = np.uint32(int(subrun_dir_match.groupdict()["subrun"]))
+
+        if run is None:
+            run_dir_match = regexes.I3_RUN_DIR_RE.match(
+                os.path.basename(os.path.dirname(fullpath))
+            )
+            if run_dir_match:
+                run = np.uint32(int(run_dir_match.groupdict()["run"]))
+    except ValueError:
+        pass
+
+    if run is None or subrun is None:
+        raise ValueError(
+            'path "{}" is incompatible with known naming'
+            " conventions or has no run and/or subrun specified".format(path)
+        )
+
+    return np.array(
+        (run, subrun), dtype=np.dtype([("run", np.uint32), ("subrun", np.uint32)])
+    )
+
+
+LOCAL_CATEGORY_XFORMS = dict(
+    run=i3_run_category_xform,
+    subrun=i3_subrun_category_xform,
+    run_subrun=i3_run_subrun_category_xform,
+    full_path=full_path_category_xform,
+)
+
+GLOBAL_CATEGORY_XFORMS = dict(simplified_path=simplify_paths)
+
+ALL_CATEGORY_XFORMS = dict(
+    list(LOCAL_CATEGORY_XFORMS.items()) + list(GLOBAL_CATEGORY_XFORMS.items())
+)
+
+
+def handle_category_index_args(index_name, category_xform):
+    """
+
+    Parameters
+    ----------
+    index_name : str or None
+    category_xform : callable or None
+
+    Returns
+    -------
+    index_name : str
+    category_xform : callable
+    category_is_global : bool
+
+    """
+    if category_xform is None and index_name is None:
+        index_name = "simplified_path"
+        category_xform = simplify_paths
+        category_is_global = True
+    elif category_xform is None:  # index_name is not None
+        assert isinstance(index_name, string_types)
+        category_xform = ALL_CATEGORY_XFORMS[index_name]
+        category_is_global = index_name in GLOBAL_CATEGORY_XFORMS
+    elif index_name is None:  # category_xform is not None
+        assert callable(category_xform)
+        for name, xfm in ALL_CATEGORY_XFORMS.items():
+            if xfm == category_xform:
+                index_name = name
+                break
+        if index_name is None:
+            raise ValueError(
+                "A custom `category_xform` callable was passed, therefore"
+                " `index_name` must also be povided to meaningfully identify"
+                " the resulting category index"
+            )
+        category_is_global = index_name in GLOBAL_CATEGORY_XFORMS
+    else:  # both category_xform and index_name are provided
+        assert isinstance(index_name, string_types)
+        assert callable(category_xform)
+        category_is_global = (
+            index_name in GLOBAL_CATEGORY_XFORMS
+            or category_xform in GLOBAL_CATEGORY_XFORMS.values()
+        )
+    return index_name, category_xform, category_is_global
 
 
 def get_i3_data_fname_info(path):
