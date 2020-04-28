@@ -193,7 +193,11 @@ def main(description=__doc__):
     # Concatenate files, augmenting existing indexes and optionally adding a
     # new index
 
-    subparser = subparsers.add_parser("cat")
+    subparser = subparsers.add_parser(
+        "cat",
+        help="""Concatenate columns. Each path can be a directory containing
+        columns or a directory of such directories."""
+    )
     all_sp.append(subparser)
     subparser.set_defaults(func=cols.concatenate)
     subparser.add_argument("--outdir", required=True, help=OUTDIR_HELP)
@@ -309,7 +313,7 @@ def main(description=__doc__):
                 "--sort",
                 action="store_true",
                 help="""Whether to sort input paths in ascending order; parses
-                numerical parts of filenames as numbers such that, e.g., x1y
+                numerical parts of filenames as numbers such that, e.g., x2y
                 comes before x10y""",
             )
         elif "path" in args:
