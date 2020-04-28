@@ -180,12 +180,12 @@ def extract_files_separately(
 
     index_name : None or str, optional
         By default, category index (if `concatenate_and_index` is True) is named
-        "sourcefile" (so the full filename is "sourcefile__category_index.npy")
+        "simplified_path" (so the full filename is "sourcefile__category_index.npy")
         due to the default for catgory naming convention (see
         `category_xform`)
 
-    category_xform : callable or None, optional
-        Create a name for the categories in a category index (if
+    category_xform : str in `utils.ALL_CATEGORY_XFORMS`, callable, or None; optional
+        Creates a name for the categories in a category index (if
         `concatenate_and_index` is True) or the name of the subdirectories
         created within `outdir` (if `concatenate_and_index` is False). Called
         via `category_xform(full_path)`, i.e. with the
@@ -281,12 +281,16 @@ def extract_files_separately(
 
     simplified_paths = utils.simplify_paths(full_paths)
 
-    # Duplicate (ignoring compression extension(s)) paths are illegal
+    # Duplicate paths are illegal (ignoring compression extension(s))
     if len(set(simplified_paths)) < len(simplified_paths):
         raise ValueError("Duplicated paths detected: {}".format(paths))
 
-    if category_xform is None:
-        categories = simplified_paths
+    index_name, category_xform, category_is_global = utils.handle_category_index_args(
+        index_name=index_name, category_xform=category_xform
+    )
+
+    if category_is_global:
+        categories = category_xform(full_paths)
     else:
         categories = [category_xform(full_path) for full_path in full_paths]
 

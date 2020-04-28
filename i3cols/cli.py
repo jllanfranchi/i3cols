@@ -102,9 +102,9 @@ def main(description=__doc__):
     subparser.add_argument(
         "--concatenate-and-index-by",
         required=False,
-        choices=["full_path", "simplified_path", "run", "subrun"],
+        choices=list(utils.ALL_CATEGORY_XFORMS.keys()),
         help="""Concatenate the individually extracted files and index using
-        this characteristic of the source files""",
+        this characteristic of the source file names and/or paths""",
     )
     subparser.add_argument("--gcd", default=None, help=GCD_HELP)
     subparser.add_argument(
@@ -198,7 +198,16 @@ def main(description=__doc__):
     subparser.set_defaults(func=cols.concatenate)
     subparser.add_argument("--outdir", required=True, help=OUTDIR_HELP)
     subparser.add_argument("--keys", nargs="+", default=None, help=KEYS_HELP)
-    subparser.add_argument("--no-mmap", action="store_true")
+    subparser.add_argument(
+        "--exclude-keys", nargs="+", default=None, help=EXCLUDE_KEYS_HELP
+    )
+    subparser.add_argument(
+        "--index-name",
+        required=True,
+        choices=list(utils.ALL_CATEGORY_XFORMS.keys()),
+        help="""Concatenate using this characteristic of the source file names
+        and/or paths""",
+    )
 
     # Compress / decompress are similar
 
@@ -325,14 +334,8 @@ def main(description=__doc__):
         kwargs["index_name"] = index_name
         kwargs["concatenate_and_index"] = index_name is not None
 
-        index_name_category_xform_map = {
-            None: None,  # doesn't matter, not indexing
-            "full_path": utils.full_path_category_xform,
-            "simplified_path": None,  # simplified_path is default behavior
-            "run": utils.i3_run_category_xform,
-            "subrun": utils.i3_subrun_category_xform,
-            "run_subrun": utils.i3_run_subrun_category_xform,
-        }
+        index_name_category_xform_map = {None: None}  # doesn't matter, not indexing
+        index_name_category_xform_map.update(utils.ALL_CATEGORY_XFORMS)
 
         if index_name not in index_name_category_xform_map:
             raise ValueError("Invalid / unhandled index '{}'".format(index_name))
