@@ -72,8 +72,8 @@ Extract all keys from IC86.11 season except any key with the word "pulses" in it
 i3cols extr_season \
     --exclude-keys '*pulses*' \
     --index-and-concatenate \
-    --gcd /tmp/i3/data/level7_v01.04/IC86.11/ \
-    --outdir /tmp/columnar/data/level7_v01.04/IC86.11 \
+    --gcd /data/ana/LE/oscNext/pass2/data/level7_v01.04/IC86.11 \
+    --outdir /data/user/jlanfranchi/columnar/data/level7_v01.04/IC86.11 \
     --compress \
     --procs 20 \
     /data/ana/LE/oscNext/pass2/data/level7_v01.04/IC86.11
@@ -121,7 +121,7 @@ def get_tau_info(data, index):
 
 
 # Load just the I3MCTree (regardless of presence other columns), memory-mapped 
-arrays, category_indexes = cols.load("/tmp/columnar/genie/level7_v01.04/160000", keys="I3MCTree", mmap=True)
+arrays, category_indexes = cols.load("/data/user/jlanfranchi/columnar/genie/level7_v01.04/160000", keys="I3MCTree", mmap=True)
 
 # Look at the first event's "flattened" I3MCTree
 i3mct_data = arrays["I3MCTree"]["data"]
@@ -196,7 +196,7 @@ Note there is a convenience function to do this (and load any category indices) 
 
 1. **Mixture of types**: Scalar data where the item in one event has one type while another event (for that same item) has another type; similarly for vector data where dtype changes either within or across events. E.g., if the datatype contains a different-length-per-event vector as one field within the type (while all other parts of the type are constant-length). This can be accommodated (to varying degrees of inefficiency) by creating a type that contains all fields and just _one_ of the vector type, and then duplicating the fields that remain constant for every value in the vector.
 2. **Many-fewer-than-1 valid item per event**: Suppose you start with simulation of N events and subsequently cut 90% of the simulated events. Operating on and storing all arrays dependent on that cut still uses arrays of length N, when only 10% of the data is valid. This is slower computationally and inefficient in terms of storage in memory and on disk.
-3. **Metadata**: Currently, there is no way to handle this within the scope of i3cols. This is a TOOD item in the future. At least hints--if not complete information--should be stored so that generated columns can be re-generated in the future. Also, things like units of the contained data are valuable to keep with each column. Also there might be useful metadata to keep in the directory-of-columns. And all of this metadata should be kept around when columns are concatenated.
+3. **Metadata, or 1-item-applies-to-all events**: Currently, there is no way to handle this within the scope of i3cols. This is a TODO item in the future. At least hints--if not complete information--should be stored so that generated columns can be re-generated in the future. Also, things like units of the contained data are valuable to keep with each column. Also there might be useful metadata to keep in the directory-of-columns. And all of this metadata should be kept around when columns are concatenated.
 
 ## See Also
 
