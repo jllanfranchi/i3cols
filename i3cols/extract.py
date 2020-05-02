@@ -326,7 +326,10 @@ def extract_files_separately(
 
     if concatenate_and_index and not overwrite:
         nothing_to_do, categ_keys, categ_exclude_keys = cols.filter_keys_from_existing(
-            outdir=outdir, keys=orig_keys, exclude_keys=orig_exclude_keys
+            outdir=outdir,
+            keys=orig_keys,
+            exclude_keys=orig_exclude_keys,
+            emit_warning=True,
         )
         if nothing_to_do:
             print("Nothing to extract")
@@ -372,6 +375,7 @@ def extract_files_separately(
                         outdir=category_outdir,
                         keys=orig_keys,
                         exclude_keys=orig_exclude_keys,
+                        emit_warning=True,
                     )
                     if nothing_to_do:
                         print(
@@ -575,7 +579,10 @@ def extract_files_as_one(
 
     if not overwrite:
         nothing_to_do, categ_keys, categ_exclude_keys = cols.filter_keys_from_existing(
-            outdir=outdir, keys=orig_keys, exclude_keys=orig_exclude_keys
+            outdir=outdir,
+            keys=orig_keys,
+            exclude_keys=orig_exclude_keys,
+            emit_warning=True,
         )
         if nothing_to_do:
             print("Nothing to extract")
@@ -668,7 +675,10 @@ def extract_season(
 
     if concatenate_and_index and not overwrite:
         nothing_to_do, categ_keys, categ_exclude_keys = cols.filter_keys_from_existing(
-            outdir=outdir, keys=orig_keys, exclude_keys=orig_exclude_keys
+            outdir=outdir,
+            keys=orig_keys,
+            exclude_keys=orig_exclude_keys,
+            emit_warning=True,
         )
         if nothing_to_do:
             print("Nothing to extract")
@@ -752,6 +762,7 @@ def extract_season(
                         outdir=category_outdir,
                         keys=orig_keys,
                         exclude_keys=orig_exclude_keys,
+                        emit_warning=True,
                     )
                     if nothing_to_do:
                         print(

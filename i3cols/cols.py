@@ -69,6 +69,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -215,7 +216,7 @@ def check_outdir_and_keys(outdir=None, outkeys=None, overwrite=False):
     return outdir
 
 
-def filter_keys_from_existing(outdir, keys=None, exclude_keys=None):
+def filter_keys_from_existing(outdir, keys=None, exclude_keys=None, emit_warning=True):
     """Augment `exclude_keys` with existing arrays in an output directory to
     avoid overwriting those arrays.
 
@@ -239,6 +240,11 @@ def filter_keys_from_existing(outdir, keys=None, exclude_keys=None):
         new_exclude_keys = list(existing_cols.keys())
 
         if new_exclude_keys:
+            if emit_warning:
+                print(
+                    "WARNING: existing keys found; these will NOT be overwritten"
+                    " {}".format(new_exclude_keys)
+                )
             if exclude_keys is None:
                 exclude_keys = new_exclude_keys
             elif isinstance(exclude_keys, string_types) or callable(exclude_keys):
@@ -272,9 +278,6 @@ def filter_keys_from_existing(outdir, keys=None, exclude_keys=None):
                 (list(s) for k, s in invalid_info.items() if k != "match_special"),
             )
         )
-
-    # print("updated_keys:\n{}\n".format(updated_keys))
-    # print("updated_exclude_keys:\n{}\n".format(updated_exclude_keys))
 
     return nothing_to_do, updated_keys, updated_exclude_keys
 
@@ -727,7 +730,7 @@ def compress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, proc
 
     try:
         for path in paths:
-            for dirpath, dirs, files in os.walk(path):
+            for dirpath, dirs, files in os.walk(path, followlinks=True):
                 if recurse:
                     dirs.sort(key=utils.nsort_key_func)
                 else:
@@ -815,42 +818,33 @@ def decompress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, pr
     pool = None
     if procs > 1:
         pool = multiprocessing.Pool(procs)
-
     try:
         for path in paths:
-            if (
-                os.path.isfile(path)
-                and path.endswith(".npz")
-                and is_key_valid(path[:-4])
-            ):
-                kwargs = dict(
-                    dirpath=os.path.dirname(path),
-                    filename=os.path.basename(path),
-                    keep=keep,
-                )
-                if procs == 1:
-                    _decompress(**kwargs)
-                else:
-                    pool.apply_async(_decompress, tuple(), kwargs)
-                continue
+            if os.path.isfile(path):
+                if path.endswith(".npz") and is_key_valid(path[:-4]):
+                    kwargs = dict(
+                        dirpath=os.path.dirname(path),
+                        filename=os.path.basename(path),
+                        keep=keep,
+                    )
+                    if procs == 1:
+                        _decompress(**kwargs)
+                    else:
+                        pool.apply_async(_decompress, tuple(), kwargs)
+            elif os.path.isdir(path):  # is directory
+                for dirpath, dirnames, filenames in os.walk(path, followlinks=True):
+                    if recurse:
+                        dirnames.sort(key=utils.nsort_key_func)
+                    else:
+                        del dirnames[:]
 
-            # else: is directory
-
-            for dirpath, dirnames, filenames in os.walk(path):
-                if recurse:
-                    dirnames.sort(key=utils.nsort_key_func)
-                else:
-                    del dirnames[:]
-
-                for filename in filenames:
-                    if filename.endswith(".npz"):
-                        if not is_key_valid(filename[:-4]):
-                            continue
-                        kwargs = dict(dirpath=dirpath, filename=filename, keep=keep)
-                        if procs == 1:
-                            _decompress(**kwargs)
-                        else:
-                            pool.apply_async(_decompress, tuple(), kwargs)
+                    for filename in filenames:
+                        if filename.endswith(".npz") and is_key_valid(filename[:-4]):
+                            kwargs = dict(dirpath=dirpath, filename=filename, keep=keep)
+                            if procs == 1:
+                                _decompress(**kwargs)
+                            else:
+                                pool.apply_async(_decompress, tuple(), kwargs)
 
     finally:
         if pool is not None:
@@ -888,6 +882,7 @@ def _decompress(dirpath, filename, keep):
 
     key = filename[:-4]
     keydirpath = os.path.join(dirpath, key)
+
     array_d = OrderedDict()
 
     npz = np.load(filepath)
@@ -907,25 +902,19 @@ def _decompress(dirpath, filename, keep):
     # sys.stdout.flush()
 
     subfilepaths_created = []
-    parent_dir_created = utils.mkdir(keydirpath)
+
+    tmp_keydirpath = tempfile.mkdtemp()
     try:
         for array_name, array in array_d.items():
-            arraypath = os.path.join(keydirpath, array_name + ".npy")
+            arraypath = os.path.join(tmp_keydirpath, array_name + ".npy")
             np.save(arraypath, array)
             subfilepaths_created.append(arraypath)
-    except:
-        if parent_dir_created is not None:
-            try:
-                shutil.rmtree(parent_dir_created)
-            except Exception as err:
-                print(err)
-        else:
-            for subfilepath in subfilepaths_created:
-                try:
-                    os.remove(subfilepath)
-                except Exception as err:
-                    print(err)
-        raise
+
+        utils.mkdir(keydirpath)
+        for subfilepath in subfilepaths_created:
+            shutil.move(subfilepath, keydirpath)
+    finally:
+        shutil.rmtree(tmp_keydirpath)
 
     if not keep:
         os.remove(filepath)
