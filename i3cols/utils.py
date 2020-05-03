@@ -51,6 +51,7 @@ __all__ = [
     "simplify_paths",
     "get_i3_data_fname_info",
     "test_get_i3_data_fname_info",
+    "find_corrupt_files",
 ]
 
 
@@ -1039,3 +1040,30 @@ def normalize_oscnext_I3MCWeightDict(path, tempdir, recurse=True):
 
     else:
         shutil.rmtree(my_tempdir)
+
+
+def find_corrupt_files(path):
+    """Find .npy and .npz files that can not be simply `np.load`-ed (memory
+    mapped, in the case of the former; the latter is simply opened, none of the
+    data is actually read out). Currently, no further checks are performed.
+
+    Parameters
+    ----------
+    path : str
+        Recurse into this directory looking for corrupt files
+
+    """
+    for dirpath, _, filenames in os.walk(path):
+        for filename in filenames:
+            filepath = os.path.join(dirpath, filename)
+            if filename.endswith(".npy"):
+                try:
+                    np.load(filepath, mmap_mode="r")
+                except Exception:
+                    print(filepath)
+            elif filename.endswith(".npz"):
+                try:
+                    contents = np.load(filepath)
+                    del contents
+                except Exception:
+                    print(filepath)
