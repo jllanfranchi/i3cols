@@ -120,7 +120,7 @@ class MatchSpecialCase(enum.IntEnum):
     MATCH_EVERYTHING = 1
 
 
-def load(path, keys=None, exclude_keys=None, mmap=True):
+def load(path, keys=None, exclude_keys=None, mmap=True, warn=True):
     """Find and load arrays within `path`.
 
     Parameters
@@ -136,7 +136,7 @@ def load(path, keys=None, exclude_keys=None, mmap=True):
 
     """
     arrays, category_indexes = find_array_paths(
-        path=path, keys=keys, exclude_keys=exclude_keys
+        path=path, keys=keys, exclude_keys=exclude_keys, warn=warn
     )
     load_contained_paths(arrays, inplace=True, mmap=mmap)
     load_contained_paths(category_indexes, inplace=True, mmap=mmap)
@@ -494,7 +494,7 @@ def get_valid_key_func(keys=None, exclude_keys=None):
     return is_key_valid
 
 
-def find_array_paths(path, keys=None, exclude_keys=None):
+def find_array_paths(path, keys=None, exclude_keys=None, warn=True):
     """Find arrays and category indexes.
 
     Parameters
@@ -611,13 +611,14 @@ def find_array_paths(path, keys=None, exclude_keys=None):
         if array_d and is_key_valid(name):
             arrays[name] = array_d
 
-    if not arrays and not category_indexes:
-        print(
-            'WARNING: no arrays or category indexes found; is path "{}" a key'
-            " directory?".format(path)
-        )
-    elif unrecognized:
-        print("WARNING: Unrecognized paths ignored: {}".format(unrecognized))
+    if warn:
+        if not arrays and not category_indexes:
+            print(
+                'WARNING: no arrays or category indexes found; is path "{}" a'
+                " key directory?".format(path)
+            )
+        elif unrecognized:
+            print("WARNING: Unrecognized paths ignored: {}".format(unrecognized))
 
     return arrays, category_indexes
 
