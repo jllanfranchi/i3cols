@@ -86,7 +86,9 @@ def main(description=__doc__):
         description=description, formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     subparsers = parser.add_subparsers(
-        title="subcommands", description="valid subcommands"
+        title="subcommands",
+        description="""For detailed help on a command, specify the
+        command and -h or --help""",
     )
 
     all_sp = []
