@@ -45,6 +45,10 @@ __all__ = [
     "decompress",
     "construct_arrays",
     "concatenate_and_index_cols",
+    "remove_excess_data",
+    "test_remove_excess_data",
+    "concatenate_indexed_arrays",
+    "test_concatenate_indexed_arrays",
 ]
 
 
@@ -144,7 +148,7 @@ def load(path, keys=None, exclude_keys=None, mmap=True, warn=True):
 
 
 def save_item(path, key, data, valid=None, index=None, overwrite=False):
-    """Save a single item (1 data array and possibly one valid arrya and one
+    """Save a single item (1 data array and possibly one valid array and one
     index array) to disk.
 
     Parameters
@@ -1493,3 +1497,191 @@ def concatenate_and_index_cols(
         raise
 
     return category_indexes, concatenated_arrays
+
+
+def remove_invalid_data_and_indices(data, index=None, valid=None):
+    """
+    Parameters
+    ----------
+    data
+    index
+    valid
+
+    Returns
+    -------
+    data
+    index
+
+    """
+
+    if valid is None:
+        return np.copy(data), np.copy(index)
+
+    if index is None:
+        return np.copy(data[valid]), None
+
+    num_valid = np.count_nonzero(valid)
+
+    if num_valid == len(valid):
+        return np.copy(data), np.copy(index)
+
+    new_index = np.empty(shape=(num_valid,), dtype=dtypes.START_STOP_T)
+    new_data = []
+
+    start = 0
+    for valid_event_i, idx in enumerate(index[valid]):
+        chunk = data[idx["start"] : idx["stop"]]
+        new_data.append(chunk)
+
+        stop = start + len(chunk)
+        new_index[valid_event_i] = (start, stop)
+        start = stop
+
+    new_data = np.concatenate(new_data)
+
+    return new_data, new_index
+
+
+def remove_excess_data(data, index, valid=None):
+    """
+
+    Parameters
+    ----------
+    data
+    index
+    valid
+
+    Returns
+    -------
+    data
+    index
+
+    """
+    new_index = np.empty_like(index)
+    new_data = []
+
+    start = 0
+    for event_i, idx in enumerate(index):
+        if valid is not None and not valid[event_i]:
+            new_index[event_i] = (start, start)
+            continue
+
+        chunk = data[idx["start"] : idx["stop"]]
+        new_data.append(chunk)
+        stop = start + len(chunk)
+        new_index[event_i] = (start, stop)
+        start = stop
+
+    new_data = np.concatenate(new_data)
+
+    return new_data, new_index
+
+
+def test_remove_excess_data():
+    """Unit tests for function `remove_excess_data`"""
+    rand = np.random.RandomState(0)
+
+    data = rand.standard_normal(size=100)
+
+    index = np.zeros(10, dtype=dtypes.START_STOP_T)
+    new_data, new_index = remove_excess_data(data, index)
+    assert len(new_data) == 0
+    assert np.all((new_index["start"] == 0) & (new_index["stop"] == 0))
+
+    index = np.empty(10, dtype=dtypes.START_STOP_T)
+    index["start"] = np.arange(0, 100, 10)
+    index["stop"] = index["start"] + 1
+    new_data, new_index = remove_excess_data(data, index)
+    assert np.all(new_data == data[::10])
+    for i, idx in enumerate(index):
+        assert np.all(
+            new_data[idx["start"] : idx["stop"]] == data[int(i * 10) : int(i * 10) + 1]
+        )
+    assert len(new_data) == 10
+
+
+def concatenate_indexed_arrays(datas, indexes):
+    """Concatenate `datas` and `indexes`, updating each `index`'s "start" and
+    "stop" to point to correct location in the concatenated version of `datas`.
+
+    Parameters
+    ----------
+    datas : iterable of N 1-D ndarrays all of same dtype
+    indexes : iterable of N 1-D ndarrays each of dtype START_STOP_T
+
+    Returns
+    -------
+    cat_data : 1-D ndarray of same dtype as ndarrays in `datas`
+    cat_index : 1-D ndarray of dtype START_STOP_T
+
+    """
+
+    new_datas = []
+    new_indexes = []
+    offset = 0
+    for data, index in zip(datas, indexes):
+        index = np.copy(index)
+        index["start"] += offset
+        index["stop"] += offset
+        new_indexes.append(index)
+        new_datas.append(data)
+        offset += len(data)
+
+    cat_data = np.concatenate(new_datas)
+    cat_index = np.concatenate(new_indexes)
+
+    return cat_data, cat_index
+
+
+def test_concatenate_indexed_arrays():
+    """Unit tests for function `concatenate_indexed_arrays`"""
+    rand = np.random.RandomState(0)
+
+    data0 = rand.standard_normal(size=100)
+    data1 = rand.standard_normal(size=20)
+    data2 = rand.standard_normal(size=60)
+
+    index0 = np.empty(10, dtype=dtypes.START_STOP_T)
+    index0["start"] = np.arange(0, 100, 10)
+    index0["stop"] = index0["start"] + 2
+
+    index1 = np.empty(5, dtype=dtypes.START_STOP_T)
+    index1["start"] = np.arange(0, 20, 4)
+    index1["stop"] = index1["start"] + 4
+
+    index2 = np.empty(20, dtype=dtypes.START_STOP_T)
+    index2["start"] = np.arange(0, len(data2), len(data2) // len(index2))
+    index2["stop"] = index2["start"] + 2
+
+    datas = [data0, data1, data2]
+    indexes = [index0, index1, index2]
+    new_data, new_index = concatenate_indexed_arrays(datas, indexes)
+    assert len(new_data) == sum(len(d) for d in datas)
+    assert len(new_index) == sum(len(idx) for idx in indexes)
+
+    i = 0
+    for i, (ix0, ix) in enumerate(zip(index0, new_index)):
+        assert ix == ix0
+        assert np.all(
+            new_data[ix["start"] : ix["stop"]] == data0[ix0["start"] : ix0["stop"]]
+        )
+    i += 1
+    assert i == len(index0)
+
+    j = i
+    for j, (ix1, ix) in enumerate(zip(index1, new_index[i:]), start=i):
+        assert np.all(
+            new_data[ix["start"] : ix["stop"]] == data1[ix1["start"] : ix1["stop"]]
+        )
+    j += 1
+    assert j == len(index0) + len(index1)
+
+    for ix2, ix in zip(index2, new_index[j:]):
+        assert np.all(
+            new_data[ix["start"] : ix["stop"]] == data2[ix2["start"] : ix2["stop"]]
+        )
+
+
+if __name__ == "__main__":
+    test_remove_excess_data()
+    test_concatenate_indexed_arrays()

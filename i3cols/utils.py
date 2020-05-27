@@ -37,6 +37,7 @@ __all__ = [
     "expand",
     "mkdir",
     "full_path_category_xform",
+    # "i3_season_category_xform",
     "i3_run_category_xform",
     "i3_subrun_category_xform",
     "i3_run_subrun_category_xform",
@@ -487,6 +488,44 @@ def full_path_category_xform(path):
         tail = match["basename"] + ".i3"
     return os.path.join(head, tail)
 
+# TODO: season
+#def i3_season_category_xform(path):
+#    """Transform a season directory or i3 file name into its most explicit
+#    season ID (e.g., IC86.2012)
+#
+#    Parameters
+#    ----------
+#    path : str
+#
+#    Returns
+#    -------
+#    season : numpy scalar of dtype np.uint32
+#
+#    """
+#    normbasename = os.path.basename(expand(path))
+#
+#    match = regexes.I3_?_RE.search(normbasename)
+#    if not match:
+#        match = regexes.I3_OSCNEXT_ROOTFNAME_RE.search(normbasename)
+#    if not match:
+#        match = regexes.I3_SEASON_DIR_RE.match(normbasename)
+#
+#    season = None
+#    try:
+#        if match:
+#            season_str = match.groupdict()["season"]
+#        else:
+#    except ValueError:
+#        pass
+#
+#    if season is None:
+#        raise ValueError(
+#            '`path` "{}" is incompatible with known I3 naming'
+#            " conventions or has no season specified".format(path)
+#        )
+#
+#    return season
+
 
 def i3_run_category_xform(path):
     """Transform an i3 file's path into its run number
@@ -639,6 +678,7 @@ def i3_run_subrun_category_xform(path):
 
 
 LOCAL_CATEGORY_XFORMS = dict(
+    # season=i3_season_category_xform,
     run=i3_run_category_xform,
     subrun=i3_subrun_category_xform,
     run_subrun=i3_run_subrun_category_xform,
