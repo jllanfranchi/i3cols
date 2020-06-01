@@ -65,6 +65,8 @@ __all__ = [
     "LINEARFIT_T",
     "SPECHARGEDISTRIBUTION_T",
     "TAUPARAM_T",
+    "OSCNEXT_NOISE_I3MCWEIGHTDICT_T",
+    "OSCNEXT_MUONGUN_I3MCWEIGHTDICT_T",
     "MIN_GENIE_I3MCWEIGHTDICT_T",
     "MIN_OSCNEXT_GENIE_I3MCWEIGHTDICT_T",
 ]
@@ -837,6 +839,44 @@ I3LOGLIKELIHOODFITPARAMS_T = np.dtype(
     ]
 )
 """gulliver.I3LogLikelihoodFitParams"""
+
+
+OSCNEXT_NOISE_I3MCWEIGHTDICT_T = np.dtype(
+    [
+        ("estimated_time_buffer", np.float64),
+        ("muon_flux_rate", np.float64),
+        ("simulated_livetime", np.float64),
+        ("weight", np.float64),
+    ]
+)
+
+
+OSCNEXT_MUONGUN_I3MCWEIGHTDICT_T = np.dtype(
+    [
+        ("inner_surface_center_x", np.float64),
+        ("inner_surface_center_y", np.float64),
+        ("inner_surface_center_z", np.float64),
+        ("inner_surface_length", np.float64),
+        ("inner_surface_radius", np.float64),
+        ("max_energy", np.float64),
+        ("max_multiplicity", np.float64),
+        ("min_energy", np.float64),
+        ("min_multiplicity", np.float64),
+        ("num_events", np.float64),
+        ("outer_surface_center_x", np.float64),
+        ("outer_surface_center_y", np.float64),
+        ("outer_surface_center_z", np.float64),
+        ("outer_surface_length", np.float64),
+        ("outer_surface_radius", np.float64),
+        ("power_law_index", np.float64),
+        ("power_law_offset", np.float64),
+        ("prob_passing_KDE", np.float64),
+        ("raw_weight", np.float64),
+        ("use_inner_surface", np.float64),
+        ("use_kde", np.float64),
+        ("weight", np.float64),
+    ]
+)
 
 
 MIN_GENIE_I3MCWEIGHTDICT_T = np.dtype(
