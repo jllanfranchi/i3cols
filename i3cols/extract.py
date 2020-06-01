@@ -278,6 +278,8 @@ def extract_files_separately(
     if isinstance(paths, string_types):
         paths = [paths]
     full_paths = [utils.expand(p) for p in sorted(paths, key=utils.nsort_key_func)]
+    if len(full_paths) == 0:
+        raise ValueError("No `paths` specified")
 
     simplified_paths = utils.simplify_paths(full_paths)
 
