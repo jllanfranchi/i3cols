@@ -49,6 +49,7 @@ __all__ = [
     "test_remove_excess_data",
     "concatenate_indexed_arrays",
     "test_concatenate_indexed_arrays",
+    "filter_categories",
 ]
 
 
@@ -1680,6 +1681,94 @@ def test_concatenate_indexed_arrays():
         assert np.all(
             new_data[ix["start"] : ix["stop"]] == data2[ix2["start"] : ix2["stop"]]
         )
+
+
+def filter_categories(
+    arrays, category_index, keep_categories, allow_missing=False, prune_data=True
+):
+    """
+    Parameters
+    ----------
+    arrays : Dict[str, Dict[str, ndarray]]
+    category_index : ndarray
+    keep_categories : Iterable[category_index.dtype[0]]
+        All categories to keep. Resulting arrays will be ordered the same as
+        categories specified in `keep_categories`
+    allow_missing : bool, optional
+        Allow categories from `keep_categories` to be missing from
+        `category_index`
+    prune_data : bool, optional
+        If an array contains "index", the index is pared down. If `prune_data`
+        is True, then the data no longer indexed is removed. If `prune_data`
+        is False, data is not modified (and therefore memorry mapped arrays are
+        not loaded into memory).
+
+    Returns
+    -------
+    new_arrays : Dict[str, Dict[str, ndarray]]
+    new_category_index : ndarray
+
+    """
+    category_name = category_index.dtype.names[0]
+    categories = category_index[category_name]
+
+    keep_category_index_l = []
+
+    for keep_category in keep_categories:
+        i_a = np.argwhere(categories == keep_category).flatten()
+        if i_a.size == 0:
+            if not allow_missing:
+                raise ValueError("Missing category {}".format(keep_category))
+            continue
+        if i_a.size > 1:
+            raise ValueError("Non-unique category {}".format(keep_category))
+        keep_category_index_l.append(category_index[i_a[0]])
+
+    keep_category_index = np.array(keep_category_index_l)
+
+    new_arrays = {}
+    for key, array in arrays.items():
+        data = array["data"]
+
+        new_array = {}
+        if "valid" in array:
+            valid = array["valid"]
+            new_valid = np.concatenate(
+                [valid[slice(*ix)] for ix in keep_category_index["index"]]
+            )
+            new_array["valid"] = new_valid
+
+        if "index" in array:
+            index = array["index"]
+            new_index = np.concatenate(
+                [index[slice(*ix)] for ix in keep_category_index["index"]]
+            )
+            if prune_data:
+                new_data = np.concatenate(
+                    [data[slice(*ix)] for ix in new_index]
+                )
+            else:
+                new_data = data
+            new_array["index"] = new_index
+        else:
+            new_data = np.concatenate(
+                [data[slice(*ix)] for ix in keep_category_index["index"]]
+            )
+
+        new_array["data"] = new_data
+
+        new_arrays[key] = new_array
+
+    num_events_per_category = (
+        keep_category_index["index"]["stop"] - keep_category_index["index"]["start"]
+    )
+    new_indices = np.concatenate([[0], np.cumsum(num_events_per_category)])
+
+    new_category_index = np.copy(keep_category_index)
+    new_category_index["index"]["start"] = new_indices[:-1]
+    new_category_index["index"]["stop"] = new_indices[1:]
+
+    return new_arrays, new_category_index
 
 
 if __name__ == "__main__":
