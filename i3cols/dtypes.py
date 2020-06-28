@@ -78,15 +78,15 @@ import numpy as np
 START_STOP_T = np.dtype([("start", np.uint64), ("stop", np.uint64)])
 """use for index array: Start and stop indices pointing into another array"""
 
-OMKEY_T = np.dtype([("string", np.int32), ("om", np.uint32), ("pmt", np.uint8),])
+OMKEY_T = np.dtype([("string", np.int32), ("om", np.uint32), ("pmt", np.uint8)])
 """icetray/public/icetray/OMKey.h"""
 
 
-I3POSITION_T = np.dtype([("x", np.float64), ("y", np.float64), ("z", np.float64),])
+I3POSITION_T = np.dtype([("x", np.float64), ("y", np.float64), ("z", np.float64)])
 """dataclasses/public/dataclasses/I3Position.h"""
 
 
-I3DIRECTION_T = np.dtype([("zenith", np.float64), ("azimuth", np.float64),])
+I3DIRECTION_T = np.dtype([("zenith", np.float64), ("azimuth", np.float64)])
 """dataclasses/public/dataclasses/I3Direction.h"""
 
 
@@ -102,10 +102,10 @@ I3OMGEO_T = np.dtype(
 """dataclasses/public/dataclasses/geometry/I3OMGeo.h"""
 
 
-DOMCALVERSION_T = np.dtype([("major", np.int8), ("minor", np.int8), ("rev", np.int8),])
+DOMCALVERSION_T = np.dtype([("major", np.int8), ("minor", np.int8), ("rev", np.int8)])
 
 
-LINEARFIT_T = np.dtype([("slope", np.float64), ("intercept", np.float64),])
+LINEARFIT_T = np.dtype([("slope", np.float64), ("intercept", np.float64)])
 """dataclasses/public/dataclasses/calibration/I3DOMCalibration.h"""
 
 
@@ -192,7 +192,7 @@ I3DOMCALIBRATION_T = np.dtype(
 
 
 FLAT_I3DOMCALIBRATION_T = np.dtype(
-    [("omkey", OMKEY_T), ("dom_cal", I3DOMCALIBRATION_T),]
+    [("omkey", OMKEY_T), ("dom_cal", I3DOMCALIBRATION_T)]
 )
 
 
@@ -208,7 +208,7 @@ I3VEMCALIBRATION_T = np.dtype(
 
 
 FLAT_I3VEMCALIBRATION_T = np.dtype(
-    [("omkey", OMKEY_T), ("vem_cal", I3VEMCALIBRATION_T),]
+    [("omkey", OMKEY_T), ("vem_cal", I3VEMCALIBRATION_T)]
 )
 
 
@@ -306,7 +306,7 @@ HITS_SUMMARY_T = np.dtype(
 
 
 EVT_HIT_INFO_T = np.dtype(
-    [("time", np.float32), ("charge", np.float32), ("event_dom_idx", np.uint32),]
+    [("time", np.float32), ("charge", np.float32), ("event_dom_idx", np.uint32)]
 )
 
 
@@ -333,7 +333,7 @@ TRIGGER_T = np.dtype(
 
 
 FLAT_TRIGGER_T = np.dtype(
-    [("level", np.uint8), ("parent_idx", np.int8), ("trigger", TRIGGER_T),]
+    [("level", np.uint8), ("parent_idx", np.int8), ("trigger", TRIGGER_T)]
 )
 
 
@@ -377,7 +377,7 @@ I3RUSAGE_T = np.dtype(
 """icetray/public/icetray/I3PhysicsTimer.h"""
 
 
-I3PARTICLEID_T = np.dtype([("majorID", np.uint64), ("minorID", np.int32),])
+I3PARTICLEID_T = np.dtype([("majorID", np.uint64), ("minorID", np.int32)])
 """dataclasses/public/dataclasses/physics/I3ParticleID.h"""
 
 
@@ -421,7 +421,7 @@ I3DIPOLEFITPARAMS_T = np.dtype(
 
 
 FLAT_PARTICLE_T = np.dtype(
-    [("level", np.uint8), ("parent_idx", np.int16), ("particle", I3PARTICLE_T),]
+    [("level", np.uint8), ("parent_idx", np.int16), ("particle", I3PARTICLE_T)]
 )
 
 

@@ -198,7 +198,7 @@ def main(description=__doc__):
     subparser = subparsers.add_parser(
         "cat",
         help="""Concatenate columns. Each path can be a directory containing
-        columns or a directory of such directories."""
+        columns or a directory of such directories.""",
     )
     all_sp.append(subparser)
     subparser.set_defaults(func=cols.concatenate)
@@ -309,7 +309,10 @@ def main(description=__doc__):
         path_argname = None
         if "paths" in args:
             subparser.add_argument(
-                "paths", nargs="*", default=sys.stdin, help="Paths to files to process"
+                "paths",
+                nargs="*",
+                default=sys.stdin,
+                help="Paths to files or directories to process",
             )
             subparser.add_argument(
                 "--sort",
@@ -323,7 +326,7 @@ def main(description=__doc__):
                 "path",
                 nargs="*",
                 default=sys.stdin,
-                help="Path to directory to process",
+                help="Path to file or directory to process",
             )
 
     # Parse command line
