@@ -745,7 +745,7 @@ def compress(paths, keys=None, exclude_keys=None, recurse=True, keep=False, proc
                     "data.npy" not in files
                     or len(dirs) > 0  # subdirectories
                     or set(files).difference(ARRAY_FNAMES.values())  # extra files
-                    or not is_key_valid(dirpath)
+                    or not is_key_valid(os.path.basename(dirpath))
                 ):
                     continue
 
@@ -1744,9 +1744,7 @@ def filter_categories(
                 [index[slice(*ix)] for ix in keep_category_index["index"]]
             )
             if prune_data:
-                new_data = np.concatenate(
-                    [data[slice(*ix)] for ix in new_index]
-                )
+                new_data = np.concatenate([data[slice(*ix)] for ix in new_index])
             else:
                 new_data = data
             new_array["index"] = new_index
