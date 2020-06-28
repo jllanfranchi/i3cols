@@ -241,6 +241,9 @@ class ParticleType(enum.IntEnum):
     Fe57Nucleus = 1000260570
     Fe58Nucleus = 1000260580
 
+    # Exotics
+    Qball = 10000000
+
     # The following are fake particles used in Icetray and have no official codes
     # The section abs(code) > 2000000000 is reserved for this kind of use
     CherenkovPhoton = 2000009900

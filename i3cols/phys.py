@@ -45,9 +45,6 @@ __all__ = [
     "NEUTRINOS",
     "calc_genie_weighted_aeff",
     "fit_genie_rw_syst",
-    "get_most_energetic_primary",
-    "get_most_energetic_primary_neutrino",
-    "get_most_energetic_primary_muon",
 ]
 
 try:
@@ -60,7 +57,7 @@ import numba
 import numpy as np
 from six import string_types
 
-from i3cols import cols, dtypes, utils
+from i3cols import cols, dtypes, enums, utils
 from i3cols.enums import ParticleType
 
 
@@ -481,39 +478,3 @@ def compute_coszen(path, key_path, outdir, outkey=None, outdtype=None, overwrite
     out = np.cos(data).astype(outdtype)
 
     cols.save_item(path=outdir, key=outkey, data=out, overwrite=overwrite)
-
-
-@numba.njit(fastmath=True, cache=True, error_model="numpy")
-def get_most_energetic_primary(flat_particles, class_abs_pdg_codes):
-    """Get most energetic primary particle, filtered by specific PDG codes"""
-    most_energetic_primary = np.empty(shape=1, dtype=dtypes.I3PARTICLE_T)[0]
-    most_energetic_primary["energy"] = -np.inf
-
-    for flat_particle in flat_particles:
-        if flat_particle["level"] > 0:
-            continue
-
-        particle = flat_particle["particle"]
-        if particle["pdg_encoding"] not in class_abs_pdg_codes:
-            continue
-
-        if most_energetic_primary is None:
-            most_energetic_primary = particle
-        elif particle["energy"] > most_energetic_primary["energy"]:
-            most_energetic_primary = particle
-
-    assert most_energetic_primary["energy"] >= 0
-
-    return most_energetic_primary
-
-
-@numba.njit(fastmath=True, cache=True, error_model="numpy")
-def get_most_energetic_primary_neutrino(flat_particles):
-    """Get most energetic primary neutrino"""
-    return get_most_energetic_primary(flat_particles, NEUTRINOS)
-
-
-@numba.njit(fastmath=True, cache=True, error_model="numpy")
-def get_most_energetic_primary_muon(flat_particles):
-    """Get most energetic primary muon"""
-    return get_most_energetic_primary(flat_particles, MUONS)
